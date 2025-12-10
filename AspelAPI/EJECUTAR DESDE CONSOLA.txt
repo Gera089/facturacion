@@ -1,0 +1,26 @@
+py -3.11 -m PyInstaller run_api.py ^
+  --name main ^
+  --onefile ^
+  --noconsole ^
+  --distpath "C:\AspelAPI" ^
+  --collect-data fastapi ^
+  --collect-data pydantic ^
+  --collect-data pandas ^
+  --hidden-import fastapi ^
+  --hidden-import uvicorn ^
+  --hidden-import uvicorn.logging ^
+  --hidden-import uvicorn.loops.auto ^
+  --hidden-import uvicorn.workers ^
+  --hidden-import pydantic ^
+  --hidden-import typing_extensions ^
+  --hidden-import numpy ^
+  --hidden-import mysql.connector ^
+  --hidden-import mysql.connector.errors ^
+  --hidden-import fdb ^
+  --hidden-import multipart ^
+  --hidden-import routers.sae ^
+  --hidden-import routers.clientes ^
+  --hidden-import routers.comandas ^
+  --hidden-import routers.facturas ^
+  --hidden-import routers.precios ^
+  --hidden-import routers.productos
