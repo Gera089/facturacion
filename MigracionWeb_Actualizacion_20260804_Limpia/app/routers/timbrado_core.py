@@ -1408,11 +1408,13 @@ def importar_receptores_fiscales(conn, empresa, registros):
             errores.append(f"Fila {indice}: días de crédito debe ser un número entero.")
             continue
         preparados.append(item)
-    if errores:
-        raise ValueError("No se importó ningún registro. " + " ".join(errores[:12]))
     for item in preparados:
         guardar_receptor_fiscal(conn, item)
-    return len(preparados)
+    return {
+        "importados": len(preparados),
+        "omitidos": len(errores),
+        "errores": errores,
+    }
 
 
 def eliminar_receptor_fiscal(conn, empresa, clave_receptor):

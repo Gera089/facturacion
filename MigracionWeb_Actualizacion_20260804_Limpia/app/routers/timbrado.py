@@ -2278,8 +2278,14 @@ def importar_receptores_fiscales_archivo(datos: dict):
     if empresa != "EZA2007":
         raise HTTPException(status_code=400, detail="La importación masiva de receptores está habilitada únicamente para EZA2007.")
     with get_timbrado_connection() as conn:
-        total = importar_receptores_fiscales(conn, empresa, (datos or {}).get("registros") or [])
-    return {"mensaje": f"{total} receptor(es) fiscal(es) importado(s) para EZA2007.", "total": total}
+        resultado = importar_receptores_fiscales(conn, empresa, (datos or {}).get("registros") or [])
+    importados = int(resultado.get("importados") or 0)
+    omitidos = int(resultado.get("omitidos") or 0)
+    detalle = " ".join(resultado.get("errores") or [] if omitidos <= 12 else (resultado.get("errores") or [])[:12])
+    mensaje = f"{importados} receptor(es) fiscal(es) importado(s) para EZA2007."
+    if omitidos:
+        mensaje += f" {omitidos} registro(s) se omitieron por datos obligatorios faltantes."
+    return {"mensaje": mensaje, "total": importados, "omitidos": omitidos, "errores": resultado.get("errores") or [], "detalle": detalle}
 
 
 @router.delete("/receptores-fiscales/{empresa}/{clave_receptor}")

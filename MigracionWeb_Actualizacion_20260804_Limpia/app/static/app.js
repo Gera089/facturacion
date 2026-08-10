@@ -18263,7 +18263,8 @@ async function importarReceptoresFiscalesXLSX() {
         headers: { ...authHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({ empresa: "EZA2007", registros }),
       });
-      alert(resultado?.mensaje || `Se importaron ${resultado?.total || registros.length} receptores fiscales.`);
+      const resumenErrores = (resultado?.errores || []).slice(0, 12).join("\n");
+      alert(`${resultado?.mensaje || `Se importaron ${resultado?.total || registros.length} receptores fiscales.`}${resumenErrores ? `\n\nPrimeros registros omitidos:\n${resumenErrores}` : ""}`);
       await cargarReceptoresFiscales();
     } catch (error) {
       alert(`No se pudo importar el archivo: ${error.message || error}`);
