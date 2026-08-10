@@ -275,7 +275,7 @@ def _resolve_company_aliases(raw_company: str) -> list[str]:
 def _folio_prefix_for_company(company: str) -> str:
     text = str(company or "").strip().lower()
     if "gourmet" in text:
-        return "FE"
+        return "00A"
     if "ibersur" in text:
         return "A00"
     if "eza2007" in text:
@@ -325,7 +325,7 @@ def _increment_folio(last_folio: str, prefix: str) -> str:
     next_number = int(match.group(1)) + 1 if match else 1
     # Las nuevas series internas EZ (EZA2007) y FE (Gourmet España)
     # no llevan relleno de ceros: EZ1, FE1, etc.
-    if str(prefix or "").upper() in {"EZ", "FE"}:
+    if str(prefix or "").upper() == "EZ":
         return f"{prefix}{next_number}"
     min_width = 3 if str(prefix or "").upper() == "A00" else 5
     width = max(min_width, len(str(next_number)))
