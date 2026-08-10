@@ -1,0 +1,16 @@
+{
+  "migracion_web_host": "0.0.0.0",
+  "migracion_web_port": 8010,
+  "migracion_web_api_url": "http://SERVIDOR-FACTURACION:8010",
+  "migracion_web_api_urls": [
+    "http://SERVIDOR-FACTURACION:8010"
+  ],
+  "mysql_host": "192.168.1.105",
+  "mysql_port": 3307,
+  "mysql_user": "REEMPLAZAR",
+  "mysql_pass": "REEMPLAZAR",
+  "mysql_database": "comandas_db",
+  "catalog_vps_url": "https://catalogo.alimentoseuropeos.com",
+  "catalog_vps_email": "REEMPLAZAR",
+  "catalog_vps_password": "REEMPLAZAR"
+}

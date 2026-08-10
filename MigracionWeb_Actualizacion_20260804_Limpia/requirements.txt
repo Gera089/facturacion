@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+mysql-connector-python
+pandas
+openpyxl
+python-multipart
+bcrypt
+httpx
+requests
+lxml

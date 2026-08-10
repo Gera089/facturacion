@@ -1,0 +1,27 @@
+# Artefactos de compilacion e instaladores
+package_build_*/
+package_dist_*/
+release/
+logs/
+*.log
+*.err
+*.out
+__pycache__/
+*.py[cod]
+
+# Datos operativos y credenciales locales
+config.json
+app/comandas_legacy/config.json
+app/comandas_legacy/crm_ventas/app_config.json
+app/comandas_legacy/crm_ventas/ventas.db
+app/comandas_legacy/crm_ventas/exports/
+storage/addendas/
+storage/cfdi/
+storage/csd/
+storage/fiel/
+storage/rutas_respaldos/
+storage/*.sqlite3
+
+# Archivos generados por la administracion de fichas
+app/comandas_legacy/FichasTecnicas/
+*.source_url.txt

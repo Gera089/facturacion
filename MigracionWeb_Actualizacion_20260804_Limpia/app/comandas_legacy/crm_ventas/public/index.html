@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Gestion de ventas</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div id="loginScreen" class="login-screen">
+      <form id="loginForm" class="login-box">
+        <p class="eyebrow">Acceso ventas</p>
+        <h1>Iniciar sesion</h1>
+        <label class="field"><span>Usuario</span><input name="username" autocomplete="username" required></label>
+        <label class="field"><span>Contrasena</span><input name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">Entrar</button>
+        <p id="loginMessage" class="muted"></p>
+      </form>
+    </div>
+    <aside class="sidebar">
+      <div>
+        <p class="eyebrow">CRM ventas</p>
+        <h1>Gestion de clientes</h1>
+      </div>
+      <label class="field">
+        <span>Usuario activo</span>
+        <select id="activeUser" disabled></select>
+      </label>
+      <nav>
+        <button class="nav-button" data-view="followupsDone">Seguimientos realizados</button>
+        <button class="nav-button active" data-view="clients">Clientes</button>
+        <button class="nav-button" data-view="prospector">Prospector</button>
+        <button class="nav-button" data-view="quote">Cotizar</button>
+        <button class="nav-button" data-view="followup">Seguimiento</button>
+        <button class="nav-button" data-view="import">Importar</button>
+        <button class="nav-button" data-view="settings">Configuracion</button>
+        <button class="nav-button logout-button" id="logoutBtn" type="button">Cerrar sesion</button>
+      </nav>
+    </aside>
+
+    <main>
+      <section class="toolbar">
+        <div class="search">
+          <input id="clientSearch" type="search" placeholder="Buscar cliente, codigo, correo o vendedor">
+          <button id="newClientBtn">Nuevo cliente</button>
+        </div>
+        <div class="status-pill" id="status">Listo</div>
+      </section>
+
+      <section class="workspace">
+        <div class="client-list">
+          <div class="panel-title">
+            <h2>Clientes</h2>
+            <span id="clientCount">0</span>
+          </div>
+          <div id="clients"></div>
+        </div>
+
+        <div class="detail">
+          <section id="view-followupsDone" class="view">
+            <div class="view-header">
+              <div>
+                <p class="eyebrow">Seguimientos realizados</p>
+                <h2>Historial de atencion</h2>
+              </div>
+            </div>
+            <div class="followups-done-toolbar">
+              <input id="doneFollowupSearch" type="search" placeholder="Buscar cliente, resultado, canal o nota">
+              <button id="refreshDoneFollowupsBtn" type="button">Actualizar</button>
+            </div>
+            <form id="doneFollowupForm" class="form-grid followups-done-form">
+              <label class="field wide"><span>Cliente</span><select name="client_id" id="doneFollowupClient" required></select></label>
+              <label class="field"><span>Fecha de contacto</span><input name="contact_at" type="datetime-local"></label>
+              <label class="field"><span>Canal</span><select name="channel"><option>Llamada</option><option>WhatsApp</option><option>Correo</option><option>Visita</option></select></label>
+              <label class="field wide"><span>Resultado</span><input name="outcome" required placeholder="Ej. pidio cotizacion, se reagenda llamada"></label>
+              <label class="field wide"><span>Siguiente accion</span><input name="next_action" placeholder="Ej. llamar el viernes"></label>
+              <label class="field"><span>Fecha siguiente accion</span><input name="next_action_at" type="datetime-local"></label>
+              <label class="field wide"><span>Notas</span><textarea name="notes" rows="3"></textarea></label>
+              <button type="submit">Guardar seguimiento</button>
+            </form>
+            <div id="doneFollowups" class="done-followups-list"></div>
+          </section>
+
+          <section id="view-clients" class="view active">
+            <div id="emptyState" class="empty">
+              Selecciona un cliente para consultar su kardex comercial.
+            </div>
+            <div id="clientCard" class="hidden">
+              <div class="kardex-header">
+                <div>
+                  <p class="eyebrow">Kardex del cliente</p>
+                  <h2 id="cardName"></h2>
+                  <p id="cardCode"></p>
+                </div>
+                <button id="editClientBtn">Editar datos</button>
+              </div>
+              <div class="info-grid">
+                <div><span>Direccion fiscal</span><strong id="taxAddress"></strong></div>
+                <div><span>Direccion consignatario</span><strong id="consigneeAddress"></strong></div>
+                <div><span>Paqueteria / entrega</span><strong id="deliveryMethod"></strong></div>
+                <div><span>Contacto</span><strong id="contactInfo"></strong></div>
+              </div>
+              <div class="tabs">
+                <button class="tab active" data-tab="products">Productos</button>
+                <button class="tab" data-tab="orders">Facturas</button>
+                <button class="tab" data-tab="quotes">Cotizaciones</button>
+                <button class="tab" data-tab="followups">Seguimientos</button>
+                <button class="tab" data-tab="activity">Bitacora</button>
+              </div>
+              <div id="products" class="tab-panel active">
+                <input id="productFilter" class="tab-filter" type="search" placeholder="Buscar producto, CIP, factura o monto">
+                <div id="productResults" class="tab-grid products-grid"></div>
+              </div>
+              <div id="orders" class="tab-panel">
+                <input id="invoiceFilter" class="tab-filter" type="search" placeholder="Buscar factura, fecha, monto o estatus">
+                <div id="invoiceResults" class="tab-grid invoices-grid"></div>
+              </div>
+              <div id="quotes" class="tab-panel quotes-grid"></div>
+              <div id="followups" class="tab-panel"></div>
+              <div id="activity" class="tab-panel"></div>
+            </div>
+          </section>
+
+          <section id="view-prospector" class="view">
+            <div class="view-header">
+              <div>
+                <p class="eyebrow">Prospector de clientes</p>
+                <h2>Buscar y guardar prospectos</h2>
+              </div>
+            </div>
+            <div class="prospector-subnav">
+              <button class="prospector-mode active" data-prospector-mode="prospects" type="button">Prospectos</button>
+              <button class="prospector-mode" data-prospector-mode="followup" type="button">Seguimiento de prospectos</button>
+            </div>
+            <form id="prospectorForm" class="prospector-search">
+              <label class="field">
+                <span>Busqueda</span>
+                <input id="prospectorQuery" name="query" placeholder="Ej. restaurantes gourmet en CDMX" required>
+              </label>
+              <label class="field">
+                <span>Zona</span>
+                <select id="prospectorZone" name="zone_name"></select>
+              </label>
+              <label class="field">
+                <span>Limite</span>
+                <input id="prospectorLimit" name="limit" type="number" min="1" max="60" value="20">
+              </label>
+              <button type="submit">Buscar y guardar</button>
+            </form>
+            <div class="zone-scan-panel">
+              <label class="field">
+                <span>Zonas a escanear</span>
+                <select id="prospectorZonesMulti" multiple size="7"></select>
+              </label>
+              <label class="check-field">
+                <input id="prospectorRescan" type="checkbox">
+                <span>Re-escanear zonas ya consultadas</span>
+              </label>
+              <button id="scanZonesBtn" type="button">Escanear zonas</button>
+            </div>
+            <div class="prospector-filters">
+              <input id="prospectorFilter" type="search" placeholder="Filtrar prospectos guardados">
+              <select id="prospectorStatus">
+                <option value="todos">Todos</option>
+                <option value="nuevo">Nuevo</option>
+                <option value="en_seguimiento">En seguimiento</option>
+                <option value="convertido">Convertido</option>
+                <option value="cliente_existente">Cliente existente</option>
+                <option value="descartado">Descartado</option>
+              </select>
+              <select id="prospectorZoneFilter"></select>
+              <button id="checkProspectClientsBtn" type="button">Verificar clientes</button>
+              <button id="refreshProspectsBtn" type="button">Actualizar</button>
+            </div>
+            <div id="prospectorResults" class="prospector-grid"></div>
+            <section id="prospectDetail" class="prospect-detail hidden">
+              <div class="prospect-detail-header">
+                <div>
+                  <p class="eyebrow">Seguimiento de prospecto</p>
+                  <h3 id="prospectDetailName">Prospecto</h3>
+                  <p id="prospectDetailMeta" class="muted"></p>
+                </div>
+                <div id="prospectDetailActions" class="prospect-detail-actions"></div>
+              </div>
+              <div class="prospect-tabs">
+                <button class="prospect-tab active" data-prospect-tab="prospect-quotes" type="button">Cotizaciones</button>
+                <button class="prospect-tab" data-prospect-tab="prospect-followups" type="button">Seguimiento</button>
+                <button class="prospect-tab" data-prospect-tab="prospect-phones" type="button">Telefonos</button>
+                <button class="prospect-tab" data-prospect-tab="prospect-activity" type="button">Bitacora</button>
+              </div>
+              <div id="prospect-quotes" class="prospect-tab-panel active">
+                <button id="newProspectQuoteBtn" class="small-action" type="button">Nueva cotizacion</button>
+                <div id="prospectQuotes" class="prospect-records"></div>
+              </div>
+              <div id="prospect-followups" class="prospect-tab-panel">
+                <form id="prospectFollowupForm" class="prospect-form">
+                  <label class="field"><span>Fecha de contacto</span><input name="contact_at" type="datetime-local"></label>
+                  <label class="field"><span>Canal</span><select name="channel"><option>Llamada</option><option>WhatsApp</option><option>Correo</option><option>Visita</option></select></label>
+                  <label class="field wide"><span>Resultado</span><input name="outcome" required placeholder="Ej. pidio precios, pendiente llamada"></label>
+                  <label class="field wide"><span>Siguiente accion</span><input name="next_action" placeholder="Ej. enviar lista de precios"></label>
+                  <label class="field"><span>Fecha siguiente accion</span><input name="next_action_at" type="datetime-local"></label>
+                  <label class="field wide"><span>Notas</span><textarea name="notes" rows="3"></textarea></label>
+                  <button type="submit">Guardar seguimiento</button>
+                </form>
+                <div id="prospectFollowups" class="prospect-records"></div>
+              </div>
+              <div id="prospect-phones" class="prospect-tab-panel">
+                <form id="prospectPhoneForm" class="prospect-form">
+                  <label class="field"><span>Etiqueta</span><input name="label" placeholder="Ej. Compras"></label>
+                  <label class="field"><span>Telefono</span><input name="phone" required></label>
+                  <label class="field wide"><span>Notas</span><input name="notes" placeholder="Horario, contacto o extension"></label>
+                  <button type="submit">Guardar telefono</button>
+                </form>
+                <div id="prospectPhones" class="prospect-records"></div>
+              </div>
+              <div id="prospect-activity" class="prospect-tab-panel">
+                <div id="prospectActivity" class="prospect-records"></div>
+              </div>
+            </section>
+          </section>
+
+          <section id="view-quote" class="view">
+            <h2>Nueva cotizacion</h2>
+            <form id="quoteForm" class="form-stack">
+              <label class="field"><span>Vigencia</span><input name="valid_until_label" value="15 dias" disabled></label>
+              <label class="field"><span>Empresa/persona cotizada</span><input name="quote_recipient" id="quoteRecipient" placeholder="Solo necesario para cliente 100000"></label>
+              <div id="quoteItems" class="items"></div>
+              <button type="button" id="addItemBtn">Agregar partida</button>
+              <label class="field"><span>Notas</span><textarea name="notes" rows="3"></textarea></label>
+              <div class="totals">
+                <div><span>Subtotal</span><strong id="quoteSubtotal">$0.00</strong></div>
+                <div><span>Descuento</span><strong id="quoteDiscount">$0.00</strong></div>
+                <div><span>IVA</span><strong id="quoteTax">$0.00</strong></div>
+                <div><span>Total</span><strong id="quoteTotal">$0.00</strong></div>
+                <div class="authorized"><span>Costo de envio autorizado 8%</span><strong id="quoteShipping">$0.00</strong></div>
+              </div>
+              <button type="submit" id="quoteSubmitBtn">Guardar cotizacion</button>
+            </form>
+          </section>
+
+          <section id="view-followup" class="view">
+            <h2>Registrar seguimiento</h2>
+            <form id="followupForm" class="form-grid">
+              <label class="field"><span>Fecha de contacto</span><input name="contact_at" type="datetime-local"></label>
+              <label class="field"><span>Canal</span><select name="channel"><option>Llamada</option><option>WhatsApp</option><option>Correo</option><option>Visita</option></select></label>
+              <label class="field wide"><span>Cotizacion relacionada</span><select name="quote_id" id="followupQuote"><option value="">Sin cotizacion relacionada</option></select></label>
+              <label class="field wide"><span>Resultado</span><input name="outcome" required placeholder="Ej. solicito cotizacion, pendiente autorizacion"></label>
+              <label class="field wide"><span>Siguiente accion</span><input name="next_action" placeholder="Ej. llamar el viernes"></label>
+              <label class="field"><span>Fecha siguiente accion</span><input name="next_action_at" type="datetime-local"></label>
+              <label class="field wide"><span>Notas</span><textarea name="notes" rows="4"></textarea></label>
+              <button type="submit">Guardar seguimiento</button>
+            </form>
+          </section>
+
+          <section id="view-import" class="view">
+            <h2>Importar clientes</h2>
+            <p class="muted">Pega un CSV con encabezados: code,name,tax_address,consignee_address,delivery_method,phone,email</p>
+            <textarea id="csvImport" rows="10" placeholder="code,name,tax_address,consignee_address,delivery_method,phone,email"></textarea>
+            <button id="importClientsBtn">Importar clientes</button>
+          </section>
+
+          <section id="view-settings" class="view">
+            <h2>Configuracion</h2>
+            <form id="bankAccountForm" class="form-grid">
+              <label class="field"><span>Empresa</span><select name="company"><option>EZA2007</option><option>Gourmet España</option><option>Ibersur</option><option>Remision</option></select></label>
+              <label class="field"><span>Beneficiario</span><input name="beneficiary"></label>
+              <label class="field"><span>Banco</span><input name="bank"></label>
+              <label class="field"><span>Cuenta</span><input name="account"></label>
+              <label class="field wide"><span>CLABE</span><input name="clabe"></label>
+              <label class="field"><span>Usar en cotizaciones</span><select name="enabled"><option value="1">Si</option><option value="0">No</option></select></label>
+              <button type="submit">Guardar cuenta</button>
+            </form>
+            <div id="bankAccounts" class="settings-list"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="clientDialog">
+      <form id="clientForm" method="dialog" class="form-grid">
+        <h2 class="wide">Cliente</h2>
+        <input type="hidden" name="id">
+        <label class="field"><span>Codigo</span><input name="code"></label>
+        <label class="field"><span>Nombre</span><input name="name" required></label>
+        <label class="field wide"><span>Direccion fiscal</span><textarea name="tax_address" rows="2"></textarea></label>
+        <label class="field wide"><span>Direccion consignatario</span><textarea name="consignee_address" rows="2"></textarea></label>
+        <label class="field wide"><span>Paqueteria / forma de entrega</span><input name="delivery_method"></label>
+        <label class="field"><span>Telefono</span><input name="phone"></label>
+        <label class="field"><span>Correo</span><input name="email" type="email"></label>
+        <div class="dialog-actions wide">
+          <button type="button" id="cancelClientBtn">Cancelar</button>
+          <button type="submit">Guardar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="previewDialog">
+      <div class="preview">
+        <button id="closePreviewBtn" class="icon-button">Cerrar</button>
+        <div id="previewContent"></div>
+      </div>
+    </dialog>
+
+    <datalist id="productSuggestions"></datalist>
+    <script src="app.js"></script>
+  </body>
+</html>
