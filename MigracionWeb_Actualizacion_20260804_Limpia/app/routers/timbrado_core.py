@@ -2451,6 +2451,30 @@ def _distribuir_descuento_cfdi(descuento_total, importes):
     return descuentos
 
 
+def _descuento_cfdi_compatible_con_total(subtotal, descuento_origen, impuestos, total):
+    """Conserva el total de la remisión y corrige únicamente un redondeo de descuento.
+
+    SAE puede guardar el descuento redondeado a dos decimales y, al mismo
+    tiempo, conservar el total calculado desde los importes por partida. Si
+    ambos difieren por un centavo, el PAC rechaza el CFDI porque la identidad
+    Total = SubTotal - Descuento + Impuestos debe ser exacta. Ajustamos solo
+    esa diferencia de redondeo (máximo dos centavos), nunca el total ni las
+    cantidades/precios de la remisión.
+    """
+    subtotal_dec = _money_cfdi(subtotal)
+    descuento_dec = _money_cfdi(descuento_origen)
+    impuestos_dec = _money_cfdi(impuestos)
+    total_dec = _money_cfdi(total)
+    if descuento_dec <= 0:
+        return descuento_dec
+    descuento_requerido = _money_cfdi(subtotal_dec + impuestos_dec - total_dec)
+    if descuento_requerido < 0:
+        return descuento_dec
+    if abs(descuento_requerido - descuento_dec) <= Decimal("0.02"):
+        return descuento_requerido
+    return descuento_dec
+
+
 def validar_pre_cfdi_factura(factura, config, resolucion=None, opciones_cfdi=None):
     resolucion = resolucion or {}
     opciones_cfdi = opciones_cfdi or {}
@@ -3262,11 +3286,16 @@ def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio
     fecha_str = fecha.strftime("%Y-%m-%dT%H:%M:%S")
     subtotal_dec = _money_cfdi(factura.get("subtotal") or factura.get("total") or 0)
     iva_total_cfdi = _money_cfdi(factura.get("iva"))
-    descuento_total_cfdi = _money_cfdi(factura.get("descuento"))
-    # No se corrigen importes dentro del CFDI: las partidas, precios, descuentos
-    # y total deben ser exactamente los de la remision de origen. La validacion
-    # pre-PAC detiene cualquier documento que no cuadre antes de generar XML.
     total_fiscal_dec = _money_cfdi(factura.get("total"))
+    descuento_total_cfdi = _descuento_cfdi_compatible_con_total(
+        subtotal_dec,
+        factura.get("descuento"),
+        iva_total_cfdi,
+        total_fiscal_dec,
+    )
+    # No se cambia el total, las cantidades ni los precios de la remisión.
+    # Únicamente se alinea un posible redondeo de descuento de uno/dos centavos
+    # para que el CFDI cumpla la identidad aritmética exigida por el SAT.
     subtotal = _fmt_money_cfdi(subtotal_dec)
     total = _fmt_money_cfdi(total_fiscal_dec)
     lugar_exp = str(config.get("cp_fiscal") or config.get("lugar_expedicion") or "03810").strip()
