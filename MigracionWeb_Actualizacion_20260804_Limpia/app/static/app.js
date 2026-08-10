@@ -18115,6 +18115,27 @@ async function cargarReceptoresFiscales() {
 
 let timbradoRecClienteSearchTimer = null;
 let timbradoReceptorCamposOcultos = { gln_receptor: "", gln_emisor_buyer: "" };
+const REGIMENES_FISCALES_SAT = {
+  "601": "General de Ley Personas Morales",
+  "603": "Personas Morales con Fines no Lucrativos",
+  "605": "Sueldos y Salarios e Ingresos Asimilados a Salarios",
+  "606": "Arrendamiento",
+  "607": "Régimen de Enajenación o Adquisición de Bienes",
+  "608": "Demás ingresos",
+  "610": "Residentes en el Extranjero sin Establecimiento Permanente en México",
+  "611": "Ingresos por Dividendos (socios y accionistas)",
+  "612": "Personas Físicas con Actividades Empresariales y Profesionales",
+  "614": "Ingresos por intereses",
+  "615": "Régimen de los ingresos por obtención de premios",
+  "616": "Sin obligaciones fiscales",
+  "620": "Sociedades Cooperativas de Producción que optan por diferir sus ingresos",
+  "621": "Incorporación Fiscal",
+  "622": "Actividades Agrícolas, Ganaderas, Silvícolas y Pesqueras",
+  "623": "Opcional para Grupos de Sociedades",
+  "624": "Coordinados",
+  "625": "Régimen de las Actividades Empresariales con ingresos a través de Plataformas Tecnológicas",
+  "626": "Régimen Simplificado de Confianza"
+};
 
 function programarBusquedaClienteReceptorFiscal() {
   clearTimeout(timbradoRecClienteSearchTimer);
@@ -18126,12 +18147,14 @@ async function cargarRegimenesReceptorFiscal(empresa, actual = "") {
   if (!select || !empresa) return;
   try {
     const receptores = await apiJson(`/timbrado/receptores-fiscales?empresa=${encodeURIComponent(empresa)}`);
-    const regimenes = [...new Set((receptores || [])
+    const regimenesGuardados = (receptores || [])
       .map((receptor) => String(receptor.regimen_fiscal || "").trim())
-      .filter(Boolean))].sort();
+      .filter(Boolean);
+    const regimenes = [...new Set([...Object.keys(REGIMENES_FISCALES_SAT), ...regimenesGuardados])]
+      .sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
     if (actual && !regimenes.includes(actual)) regimenes.push(actual);
     select.innerHTML = '<option value="">Selecciona régimen fiscal</option>' + regimenes
-      .map((regimen) => `<option value="${escapeAttr(regimen)}">${escapeCell(regimen)}</option>`).join("");
+      .map((regimen) => `<option value="${escapeAttr(regimen)}">${escapeCell(regimen)}${REGIMENES_FISCALES_SAT[regimen] ? " - " + escapeCell(REGIMENES_FISCALES_SAT[regimen]) : ""}</option>`).join("");
     select.value = actual || "";
   } catch (error) {
     console.warn("No se pudieron cargar los regímenes fiscales", error);
@@ -18194,7 +18217,7 @@ async function buscarClienteBaseReceptorFiscal() {
       const opcion = document.createElement("button");
       opcion.type = "button";
       opcion.className = "timbrado-search-option";
-      opcion.style.cssText = "display:block;width:100%;padding:9px 12px;text-align:left;border:0;border-bottom:1px solid #e6eef7;background:#fff;cursor:pointer";
+      opcion.style.cssText = "display:block;width:100%;padding:9px 12px;text-align:left;border:0;border-bottom:1px solid #e6eef7;background:#fff;color:#172b4d;font-weight:600;cursor:pointer";
       opcion.textContent = `${cliente.numero || ""} - ${cliente.nombre || ""}`;
       opcion.addEventListener("click", () => cargarClienteBaseEnReceptorFiscal(cliente.numero || ""));
       sugerencias.appendChild(opcion);
