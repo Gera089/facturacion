@@ -8270,7 +8270,29 @@ docViewerModal.addEventListener("click", (e) => {
 docViewerPrint.addEventListener("click", () => {
   try { docViewerIframe.contentWindow.print(); } catch (_) { alert("No se pudo imprimir."); }
 });
-docViewerDownload.addEventListener("click", () => {
+docViewerDownload.addEventListener("click", async () => {
+  // Desde la vista previa fiscal se entregan juntos los dos comprobantes. Así
+  // el usuario recibe el mismo ZIP que en MIO y el navegador no bloquea la
+  // segunda descarga automática.
+  if (_currentFiscalDoc?.folio) {
+    try {
+      docViewerDownload.disabled = true;
+      const response = await apiFetch("/timbrado/cfdi-emitidos/descarga-lote", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          folios: [_currentFiscalDoc.folioSerie || _currentFiscalDoc.folio],
+          tipos: ["pdf", "xml"],
+        }),
+      });
+      await descargarBlobRespuesta(response, `CFDI_${_currentFiscalDoc.folioSerie || _currentFiscalDoc.folio}.zip`);
+    } catch (error) {
+      alert(error.message || "No se pudo descargar el ZIP del CFDI.");
+    } finally {
+      docViewerDownload.disabled = false;
+    }
+    return;
+  }
   if (!_currentDocBlobUrl) return;
   const a = document.createElement("a");
   a.href = _currentDocBlobUrl;
