@@ -1878,6 +1878,29 @@ def _detectar_modo_facturacion(factura):
     return "KILOS" if kilos_total > piezas_total else "PIEZAS"
 
 
+def _es_venta_mostrador(factura, receptor=None):
+    """Identifica el cliente genérico que usa el legado para venta de mostrador."""
+    receptor = receptor or {}
+    numeros = (
+        factura.get("numero_cliente"),
+        factura.get("numero_cliente_cfdi"),
+        receptor.get("numero"),
+    )
+    return any(str(numero or "").strip().replace(",", "") == "100000" for numero in numeros)
+
+
+def _receptor_publico_general(config):
+    return {
+        "numero": "100000",
+        "nombre": "PUBLICO EN GENERAL",
+        "razon_social": "PUBLICO EN GENERAL",
+        "rfc": "XAXX010101000",
+        "codigo_postal": str(config.get("cp_fiscal") or config.get("lugar_expedicion") or "").strip(),
+        "regimen_fiscal": "616",
+        "uso_cfdi": "S01",
+    }
+
+
 def resolver_receptor_timbrado(conn, conn_legacy, factura, incluir_preview=True):
     _asegurar_tablas_timbrado(conn)
     empresa = _normalizar_empresa(factura.get("empresa"))
@@ -2001,6 +2024,11 @@ def resolver_receptor_timbrado(conn, conn_legacy, factura, incluir_preview=True)
             addenda = {}
         cliente_receptor_resuelto = dict(cliente_receptor or {})
         cliente_receptor_resuelto["gln_consignatario"] = gln_consignatario
+    # El cliente 100000 es la venta de mostrador del sistema legado. No debe
+    # depender de que tenga datos fiscales capturados en la tabla de clientes.
+    if _es_venta_mostrador(factura, cliente_receptor_resuelto):
+        config_empresa = obtener_config_timbrado(conn, empresa)
+        cliente_receptor_resuelto.update(_receptor_publico_general(config_empresa))
     resultado = {
         "empresa": empresa,
         "modo_facturacion": modo,
@@ -2365,7 +2393,13 @@ def _distribuir_descuento_cfdi(descuento_total, importes):
 def validar_pre_cfdi_factura(factura, config, resolucion=None, opciones_cfdi=None):
     resolucion = resolucion or {}
     opciones_cfdi = opciones_cfdi or {}
-    receptor = resolucion.get("cliente_receptor") or resolucion.get("receptor") or {}
+    receptor = dict(resolucion.get("cliente_receptor") or resolucion.get("receptor") or {})
+    if _es_venta_mostrador(factura, receptor):
+        receptor.update(_receptor_publico_general(config))
+        # Para RFC genérico el SAT requiere el uso S01, independientemente de
+        # la selección previamente guardada en la pantalla fiscal.
+        opciones_cfdi = dict(opciones_cfdi)
+        opciones_cfdi["uso_cfdi"] = "S01"
     faltantes = []
     advertencias = []
 
@@ -3182,6 +3216,9 @@ def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio
     emisor_nombre = xml_escape(str(emisor.get("razon_social") or config.get("razon_social") or "").strip())
     emisor_regimen = xml_escape(str(emisor.get("regimen_fiscal") or config.get("regimen_fiscal") or "601").strip())
     opciones_cfdi = _opciones_cfdi_desde_item(item)
+    if _es_venta_mostrador(factura, receptor):
+        receptor = {**receptor, **_receptor_publico_general(config)}
+        opciones_cfdi = {**opciones_cfdi, "uso_cfdi": "S01"}
 
     receptor_rfc = xml_escape(str(receptor.get("rfc") or factura.get("rfc") or "").strip())
     receptor_nombre = xml_escape(str(receptor.get("razon_social") or item.get("cliente_receptor_nombre") or factura.get("cliente_nombre") or "").strip())
