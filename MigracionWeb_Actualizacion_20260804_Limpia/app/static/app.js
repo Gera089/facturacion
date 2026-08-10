@@ -18113,6 +18113,31 @@ async function cargarReceptoresFiscales() {
   }
 }
 
+let timbradoRecClienteSearchTimer = null;
+let timbradoReceptorCamposOcultos = { gln_receptor: "", gln_emisor_buyer: "" };
+
+function programarBusquedaClienteReceptorFiscal() {
+  clearTimeout(timbradoRecClienteSearchTimer);
+  timbradoRecClienteSearchTimer = setTimeout(() => buscarClienteBaseReceptorFiscal(), 260);
+}
+
+async function cargarRegimenesReceptorFiscal(empresa, actual = "") {
+  const select = document.getElementById("timb-rec-regimen");
+  if (!select || !empresa) return;
+  try {
+    const receptores = await apiJson(`/timbrado/receptores-fiscales?empresa=${encodeURIComponent(empresa)}`);
+    const regimenes = [...new Set((receptores || [])
+      .map((receptor) => String(receptor.regimen_fiscal || "").trim())
+      .filter(Boolean))].sort();
+    if (actual && !regimenes.includes(actual)) regimenes.push(actual);
+    select.innerHTML = '<option value="">Selecciona régimen fiscal</option>' + regimenes
+      .map((regimen) => `<option value="${escapeAttr(regimen)}">${escapeCell(regimen)}</option>`).join("");
+    select.value = actual || "";
+  } catch (error) {
+    console.warn("No se pudieron cargar los regímenes fiscales", error);
+  }
+}
+
 async function editarReceptorFiscal(clave) {
   const empresa = document.getElementById("timb-rec-empresa").value;
   if (!empresa) return;
@@ -18123,7 +18148,7 @@ async function editarReceptorFiscal(clave) {
     document.getElementById("timb-rec-alias").value = data.alias_receptor || "";
     document.getElementById("timb-rec-rs").value = data.razon_social || "";
     document.getElementById("timb-rec-rfc").value = data.rfc || "";
-    document.getElementById("timb-rec-regimen").value = data.regimen_fiscal || "";
+    await cargarRegimenesReceptorFiscal(empresa, data.regimen_fiscal || "");
     document.getElementById("timb-rec-cp").value = data.cp_fiscal || "";
     document.getElementById("timb-rec-uso").value = data.uso_cfdi || "";
     document.getElementById("timb-rec-calle").value = data.calle || "";
@@ -18133,8 +18158,10 @@ async function editarReceptorFiscal(clave) {
     document.getElementById("timb-rec-mun").value = data.municipio || "";
     document.getElementById("timb-rec-est").value = data.estado || "";
     document.getElementById("timb-rec-pais").value = data.pais || "Mexico";
-    document.getElementById("timb-rec-gln").value = data.gln_receptor || "";
-    document.getElementById("timb-rec-buyer").value = data.gln_emisor_buyer || "";
+    timbradoReceptorCamposOcultos = {
+      gln_receptor: data.gln_receptor || "",
+      gln_emisor_buyer: data.gln_emisor_buyer || "",
+    };
     document.getElementById("timb-rec-dias").value = data.dias_credito || "";
     document.getElementById("timb-rec-correo").value = data.correo_envio || "";
     abrirModalReceptorFiscal(`Editar receptor fiscal: ${data.clave_receptor}`);
@@ -18154,19 +18181,29 @@ async function buscarClienteBaseReceptorFiscal() {
   const empresa = document.getElementById("timb-rec-empresa").value;
   const texto = document.getElementById("timb-rec-cliente-buscar").value.trim();
   if (!empresa) return alert("Selecciona primero la empresa.");
-  const select = document.getElementById("timb-rec-cliente-resultados");
+  const sugerencias = document.getElementById("timb-rec-cliente-sugerencias");
+  if (!texto) {
+    sugerencias.innerHTML = "";
+    sugerencias.classList.add("hidden");
+    return;
+  }
   try {
     const rows = await apiJson(`/timbrado/clientes-base?empresa=${encodeURIComponent(empresa)}&texto=${encodeURIComponent(texto)}`);
-    select.innerHTML = '<option value="">Selecciona un cliente para cargar sus datos fiscales</option>';
+    sugerencias.innerHTML = "";
     (rows || []).forEach((cliente) => {
-      const option = document.createElement("option");
-      option.value = cliente.numero || "";
-      option.textContent = `${cliente.numero || ""} - ${cliente.nombre || ""}`;
-      select.appendChild(option);
+      const opcion = document.createElement("button");
+      opcion.type = "button";
+      opcion.className = "timbrado-search-option";
+      opcion.style.cssText = "display:block;width:100%;padding:9px 12px;text-align:left;border:0;border-bottom:1px solid #e6eef7;background:#fff;cursor:pointer";
+      opcion.textContent = `${cliente.numero || ""} - ${cliente.nombre || ""}`;
+      opcion.addEventListener("click", () => cargarClienteBaseEnReceptorFiscal(cliente.numero || ""));
+      sugerencias.appendChild(opcion);
     });
-    if (!rows?.length) alert("No se encontraron clientes para esa empresa.");
+    if (!rows?.length) sugerencias.innerHTML = '<div class="muted" style="padding:10px">No se encontraron clientes.</div>';
+    sugerencias.classList.remove("hidden");
   } catch (error) {
-    alert(error.message || "No se pudo buscar el cliente.");
+    sugerencias.innerHTML = `<div style="padding:10px;color:#b42318">${escapeCell(error.message || "No se pudo buscar el cliente.")}</div>`;
+    sugerencias.classList.remove("hidden");
   }
 }
 
@@ -18189,6 +18226,8 @@ async function cargarClienteBaseEnReceptorFiscal(numero) {
     document.getElementById("timb-rec-pais").value = cliente.pais || "Mexico";
     document.getElementById("timb-rec-dias").value = cliente.dias_credito || "";
     document.getElementById("timb-rec-correo").value = cliente.correo_electronico || "";
+    document.getElementById("timb-rec-cliente-buscar").value = `${cliente.numero || numero} - ${cliente.nombre || ""}`;
+    document.getElementById("timb-rec-cliente-sugerencias").classList.add("hidden");
     document.getElementById("timb-rec-regimen").focus();
   } catch (error) {
     alert(error.message || "No se pudieron cargar los datos fiscales del cliente.");
@@ -18214,8 +18253,8 @@ async function guardarReceptorFiscal() {
     municipio: document.getElementById("timb-rec-mun").value,
     estado: document.getElementById("timb-rec-est").value,
     pais: document.getElementById("timb-rec-pais").value,
-    gln_receptor: document.getElementById("timb-rec-gln").value,
-    gln_emisor_buyer: document.getElementById("timb-rec-buyer").value,
+    gln_receptor: timbradoReceptorCamposOcultos.gln_receptor || "",
+    gln_emisor_buyer: timbradoReceptorCamposOcultos.gln_emisor_buyer || "",
     dias_credito: document.getElementById("timb-rec-dias").value,
     correo_envio: document.getElementById("timb-rec-correo").value,
   };
@@ -18233,12 +18272,15 @@ async function guardarReceptorFiscal() {
   }
 }
 
-function timbradoNuevoReceptor() {
+async function timbradoNuevoReceptor() {
   if (!document.getElementById("timb-rec-empresa").value) return alert("Selecciona primero la empresa.");
   document.getElementById("timb-rec-form").querySelectorAll("input").forEach((i) => i.value = "");
   document.getElementById("timb-rec-pais").value = "Mexico";
+  timbradoReceptorCamposOcultos = { gln_receptor: "", gln_emisor_buyer: "" };
+  await cargarRegimenesReceptorFiscal(document.getElementById("timb-rec-empresa").value);
   document.getElementById("timb-rec-cliente-buscar").value = "";
-  document.getElementById("timb-rec-cliente-resultados").innerHTML = '<option value="">Selecciona un cliente para cargar sus datos fiscales</option>';
+  document.getElementById("timb-rec-cliente-sugerencias").innerHTML = "";
+  document.getElementById("timb-rec-cliente-sugerencias").classList.add("hidden");
   abrirModalReceptorFiscal("Nuevo receptor fiscal");
 }
 

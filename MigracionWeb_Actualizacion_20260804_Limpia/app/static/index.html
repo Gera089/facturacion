@@ -1856,13 +1856,12 @@
                     <div style="margin:14px 0;padding:14px;border:1px solid #cbd8e6;border-radius:10px;background:#f7fbff">
                       <strong>Buscar cliente de la empresa seleccionada</strong>
                       <div class="toolbar-actions" style="margin-top:8px">
-                        <input id="timb-rec-cliente-buscar" class="form-input" style="min-width:260px" placeholder="Número o nombre del cliente" />
-                        <button type="button" class="mio-action mio-teal" onclick="buscarClienteBaseReceptorFiscal()">Buscar</button>
-                        <select id="timb-rec-cliente-resultados" class="timbrado-select" style="min-width:360px" onchange="cargarClienteBaseEnReceptorFiscal(this.value)">
-                          <option value="">Selecciona un cliente para cargar sus datos fiscales</option>
-                        </select>
+                        <div style="position:relative;min-width:min(650px,100%)">
+                          <input id="timb-rec-cliente-buscar" class="form-input" style="width:100%" autocomplete="off" oninput="programarBusquedaClienteReceptorFiscal()" placeholder="Escribe número o nombre del cliente" />
+                          <div id="timb-rec-cliente-sugerencias" class="hidden" style="position:absolute;z-index:20;left:0;right:0;top:calc(100% + 3px);max-height:240px;overflow:auto;background:#fff;border:1px solid #b9cbe0;border-radius:8px;box-shadow:0 8px 18px rgba(29,61,94,.18)"></div>
+                        </div>
                       </div>
-                      <p class="muted" style="margin:8px 0 0">Se cargan razón social, RFC, CP, domicilio, correo y días de crédito. Régimen y uso CFDI se capturan según la constancia fiscal del receptor.</p>
+                      <p class="muted" style="margin:8px 0 0">Selecciona una sugerencia para cargar razón social, RFC, CP, domicilio, correo y días de crédito. Régimen y uso CFDI se capturan según la constancia fiscal del receptor.</p>
                     </div>
                 <div id="timb-rec-form" style="display:block;margin-top:12px">
                   <div class="timbrado-form-grid-3">
@@ -1870,7 +1869,7 @@
                     <div><label>Alias</label><input id="timb-rec-alias" class="form-input" /></div>
                     <div><label>Razon Social</label><input id="timb-rec-rs" class="form-input" /></div>
                     <div><label>RFC</label><input id="timb-rec-rfc" class="form-input" /></div>
-                    <div><label>Regimen Fiscal</label><input id="timb-rec-regimen" class="form-input" /></div>
+                    <div><label>Regimen Fiscal</label><select id="timb-rec-regimen" class="form-input"><option value="">Selecciona régimen fiscal</option></select></div>
                     <div><label>CP Fiscal</label><input id="timb-rec-cp" class="form-input" /></div>
                     <div><label>Uso CFDI</label><input id="timb-rec-uso" class="form-input" /></div>
                     <div><label>Calle</label><input id="timb-rec-calle" class="form-input" /></div>
@@ -1880,8 +1879,6 @@
                     <div><label>Municipio</label><input id="timb-rec-mun" class="form-input" /></div>
                     <div><label>Estado</label><input id="timb-rec-est" class="form-input" /></div>
                     <div><label>Pais</label><input id="timb-rec-pais" class="form-input" value="Mexico" /></div>
-                    <div><label>GLN Receptor</label><input id="timb-rec-gln" class="form-input" /></div>
-                    <div><label>GLN Buyer</label><input id="timb-rec-buyer" class="form-input" /></div>
                     <div><label>Dias Credito</label><input id="timb-rec-dias" class="form-input" type="number" /></div>
                     <div><label>Correo Envio</label><input id="timb-rec-correo" class="form-input" /></div>
                   </div>
