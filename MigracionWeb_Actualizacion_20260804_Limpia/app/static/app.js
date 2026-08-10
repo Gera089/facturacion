@@ -3872,7 +3872,7 @@ function mostrarModalEmisionFiscal(folio) {
   modal.id = "fiscal-emitting-modal";
   modal.className = "sat-cancel-modal";
   modal.innerHTML = `
-    <div class="fiscal-emitting-dialog ${options.progress ? "catalog-sync-dialog" : ""}">
+    <div class="fiscal-emitting-dialog">
       <div class="fiscal-emitting-spinner" aria-hidden="true"></div>
       <h3>La emision de su documento esta en curso</h3>
       <p>Factura ${escHtml(folio)}. Estamos generando el CFDI, XML y PDF.</p>
