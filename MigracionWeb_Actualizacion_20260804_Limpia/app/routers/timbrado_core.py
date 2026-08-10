@@ -1996,6 +1996,11 @@ def resolver_receptor_timbrado(conn, conn_legacy, factura, incluir_preview=True)
             if receptor_clave:
                 receptor_fiscal = obtener_receptor_fiscal(conn, empresa, receptor_clave)
             break
+    # Si el cliente ya tiene un receptor fiscal con su misma clave, debe usarse
+    # aun cuando no haya regla de redirección ni RFC en la tabla legado.
+    # De otro modo la emisión ignora datos visibles en "Editar receptor".
+    if not receptor_fiscal and destino_numero:
+        receptor_fiscal = obtener_receptor_fiscal(conn, empresa, destino_numero)
     cliente_receptor = _obtener_cliente_por_numero(conn_legacy, empresa, destino_numero) if destino_numero else {}
     # Algunas tiendas comparten el mismo RFC fiscal, pero no siempre quedaron dadas de
     # alta en un grupo de redirección. Si el RFC de la tienda identifica de forma
