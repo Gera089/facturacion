@@ -18136,6 +18136,32 @@ const REGIMENES_FISCALES_SAT = {
   "625": "Régimen de las Actividades Empresariales con ingresos a través de Plataformas Tecnológicas",
   "626": "Régimen Simplificado de Confianza"
 };
+const USOS_CFDI_SAT = {
+  "G01": "Adquisición de mercancías",
+  "G02": "Devoluciones, descuentos o bonificaciones",
+  "G03": "Gastos en general",
+  "I01": "Construcciones",
+  "I02": "Mobiliario y equipo de oficina por inversiones",
+  "I03": "Equipo de transporte",
+  "I04": "Equipo de cómputo y accesorios",
+  "I05": "Dados, troqueles, moldes, matrices y herramental",
+  "I06": "Comunicaciones telefónicas",
+  "I07": "Comunicaciones satelitales",
+  "I08": "Otra maquinaria y equipo",
+  "D01": "Honorarios médicos, dentales y gastos hospitalarios",
+  "D02": "Gastos médicos por incapacidad o discapacidad",
+  "D03": "Gastos funerales",
+  "D04": "Donativos",
+  "D05": "Intereses reales efectivamente pagados por créditos hipotecarios",
+  "D06": "Aportaciones voluntarias al SAR",
+  "D07": "Primas por seguros de gastos médicos",
+  "D08": "Gastos de transportación escolar obligatoria",
+  "D09": "Depósitos en cuentas para el ahorro, primas de pensiones",
+  "D10": "Pagos por servicios educativos",
+  "S01": "Sin efectos fiscales",
+  "CP01": "Pagos",
+  "CN01": "Nómina"
+};
 
 function programarBusquedaClienteReceptorFiscal() {
   clearTimeout(timbradoRecClienteSearchTimer);
@@ -18161,6 +18187,26 @@ async function cargarRegimenesReceptorFiscal(empresa, actual = "") {
   }
 }
 
+async function cargarUsosCfdiReceptorFiscal(empresa, actual = "") {
+  const select = document.getElementById("timb-rec-uso");
+  if (!select || !empresa) return;
+  try {
+    const receptores = await apiJson(`/timbrado/receptores-fiscales?empresa=${encodeURIComponent(empresa)}`);
+    const usosGuardados = (receptores || [])
+      .map((receptor) => String(receptor.uso_cfdi || "").trim().toUpperCase())
+      .filter(Boolean);
+    const usos = [...new Set([...Object.keys(USOS_CFDI_SAT), ...usosGuardados])]
+      .sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
+    const valorActual = String(actual || "").trim().toUpperCase();
+    if (valorActual && !usos.includes(valorActual)) usos.push(valorActual);
+    select.innerHTML = '<option value="">Selecciona uso CFDI</option>' + usos
+      .map((uso) => `<option value="${escapeAttr(uso)}">${escapeCell(uso)}${USOS_CFDI_SAT[uso] ? " - " + escapeCell(USOS_CFDI_SAT[uso]) : ""}</option>`).join("");
+    select.value = valorActual;
+  } catch (error) {
+    console.warn("No se pudieron cargar los usos CFDI", error);
+  }
+}
+
 async function editarReceptorFiscal(clave) {
   const empresa = document.getElementById("timb-rec-empresa").value;
   if (!empresa) return;
@@ -18172,8 +18218,8 @@ async function editarReceptorFiscal(clave) {
     document.getElementById("timb-rec-rs").value = data.razon_social || "";
     document.getElementById("timb-rec-rfc").value = data.rfc || "";
     await cargarRegimenesReceptorFiscal(empresa, data.regimen_fiscal || "");
+    await cargarUsosCfdiReceptorFiscal(empresa, data.uso_cfdi || "");
     document.getElementById("timb-rec-cp").value = data.cp_fiscal || "";
-    document.getElementById("timb-rec-uso").value = data.uso_cfdi || "";
     document.getElementById("timb-rec-calle").value = data.calle || "";
     document.getElementById("timb-rec-ext").value = data.no_exterior || "";
     document.getElementById("timb-rec-int").value = data.no_interior || "";
@@ -18301,6 +18347,7 @@ async function timbradoNuevoReceptor() {
   document.getElementById("timb-rec-pais").value = "Mexico";
   timbradoReceptorCamposOcultos = { gln_receptor: "", gln_emisor_buyer: "" };
   await cargarRegimenesReceptorFiscal(document.getElementById("timb-rec-empresa").value);
+  await cargarUsosCfdiReceptorFiscal(document.getElementById("timb-rec-empresa").value);
   document.getElementById("timb-rec-cliente-buscar").value = "";
   document.getElementById("timb-rec-cliente-sugerencias").innerHTML = "";
   document.getElementById("timb-rec-cliente-sugerencias").classList.add("hidden");
