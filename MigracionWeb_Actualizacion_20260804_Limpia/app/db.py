@@ -1,4 +1,5 @@
 import hashlib
+import json
 import secrets
 import sqlite3
 from contextlib import contextmanager
@@ -204,6 +205,13 @@ def init_db() -> None:
                 FOREIGN KEY(blocked_by) REFERENCES users(id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_section_permissions (
+                username TEXT PRIMARY KEY,
+                sections_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL
+            )
+        """)
 
         for module_key, title, status in bootstrap_modules:
             exists = conn.execute(
@@ -272,6 +280,42 @@ def ensure_user(username: str, full_name: str, role: str) -> dict:
             "full_name": full_name,
             "role": role,
         }
+
+
+def get_user_sections(username: str):
+    """None conserva los permisos normales del perfil; una lista limita secciones."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT sections_json FROM user_section_permissions WHERE username = ?",
+            (str(username or "").strip(),),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            value = json.loads(row["sections_json"] or "[]")
+        except Exception:
+            value = []
+        return value if isinstance(value, list) else []
+
+
+def set_user_sections(username: str, sections: list[str]) -> None:
+    clean = sorted({str(item or "").strip() for item in (sections or []) if str(item or "").strip()})
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_section_permissions (username, sections_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                sections_json = excluded.sections_json,
+                updated_at = excluded.updated_at
+            """,
+            (str(username or "").strip(), json.dumps(clean), datetime.now().isoformat(timespec="seconds")),
+        )
+
+
+def delete_user_sections(username: str) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM user_section_permissions WHERE username = ?", (str(username or "").strip(),))
 
 
 def create_session(user_id: int) -> str:

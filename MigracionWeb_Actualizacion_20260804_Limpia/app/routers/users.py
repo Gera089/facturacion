@@ -3,7 +3,8 @@ import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.dependencies import require_user
+from app.dependencies import require_admin
+from app.db import delete_user_sections, get_user_sections, set_user_sections
 from app.legacy_db import get_legacy_connection
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -14,12 +15,14 @@ class UserCreate(BaseModel):
     password: str
     full_name: str = ""
     role: str = "consulta"
+    sections: list[str] | None = None
 
 
 class UserUpdate(BaseModel):
     full_name: str = ""
     role: str = "consulta"
     active: int = 1
+    sections: list[str] | None = None
 
 
 class UserPassword(BaseModel):
@@ -27,7 +30,7 @@ class UserPassword(BaseModel):
 
 
 @router.get("")
-def list_users(user=Depends(require_user)):
+def list_users(user=Depends(require_admin)):
     conn = get_legacy_connection()
     try:
         cursor = conn.cursor(dictionary=True)
@@ -35,7 +38,10 @@ def list_users(user=Depends(require_user)):
             "SELECT id, usuario AS username, usuario AS full_name, rol AS role, activo AS active, fecha_creacion AS created_at "
             "FROM usuarios ORDER BY usuario"
         )
-        return cursor.fetchall()
+        rows = cursor.fetchall()
+        for row in rows:
+            row["sections"] = get_user_sections(row.get("username"))
+        return rows
     except Exception as e:
         raise HTTPException(500, f"listar usuarios: {e}")
     finally:
@@ -43,7 +49,7 @@ def list_users(user=Depends(require_user)):
 
 
 @router.post("")
-def create_user(payload: UserCreate, user=Depends(require_user)):
+def create_user(payload: UserCreate, user=Depends(require_admin)):
     conn = get_legacy_connection()
     try:
         cursor = conn.cursor()
@@ -56,6 +62,8 @@ def create_user(payload: UserCreate, user=Depends(require_user)):
             (payload.username.strip(), pw_hash, payload.role),
         )
         conn.commit()
+        if payload.sections is not None:
+            set_user_sections(payload.username, payload.sections)
         return {"id": cursor.lastrowid, "mensaje": "Usuario creado"}
     except HTTPException:
         conn.rollback()
@@ -68,7 +76,7 @@ def create_user(payload: UserCreate, user=Depends(require_user)):
 
 
 @router.put("/{user_id}")
-def update_user(user_id: int, payload: UserUpdate, user=Depends(require_user)):
+def update_user(user_id: int, payload: UserUpdate, user=Depends(require_admin)):
     conn = get_legacy_connection()
     try:
         cursor = conn.cursor(dictionary=True)
@@ -81,6 +89,8 @@ def update_user(user_id: int, payload: UserUpdate, user=Depends(require_user)):
             (payload.role, payload.active, user_id),
         )
         conn.commit()
+        if payload.sections is not None:
+            set_user_sections(existing["usuario"], payload.sections)
         return {"mensaje": "Usuario actualizado"}
     except HTTPException:
         conn.rollback()
@@ -93,7 +103,7 @@ def update_user(user_id: int, payload: UserUpdate, user=Depends(require_user)):
 
 
 @router.put("/{user_id}/password")
-def reset_password(user_id: int, payload: UserPassword, user=Depends(require_user)):
+def reset_password(user_id: int, payload: UserPassword, user=Depends(require_admin)):
     conn = get_legacy_connection()
     try:
         cursor = conn.cursor(dictionary=True)
@@ -115,7 +125,7 @@ def reset_password(user_id: int, payload: UserPassword, user=Depends(require_use
 
 
 @router.delete("/{user_id}")
-def delete_user(user_id: int, user=Depends(require_user)):
+def delete_user(user_id: int, user=Depends(require_admin)):
     conn = get_legacy_connection()
     try:
         cursor = conn.cursor(dictionary=True)
@@ -127,6 +137,7 @@ def delete_user(user_id: int, user=Depends(require_user)):
             raise HTTPException(400, "No se puede eliminar el usuario admin")
         cursor.execute("DELETE FROM usuarios WHERE id = %s", (user_id,))
         conn.commit()
+        delete_user_sections(existing["usuario"])
         return {"mensaje": "Usuario eliminado"}
     except HTTPException:
         conn.rollback()

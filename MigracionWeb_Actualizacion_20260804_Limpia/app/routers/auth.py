@@ -3,7 +3,7 @@ import bcrypt
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.db import authenticate_user as _sqlite_auth, create_session, ensure_user, is_user_blocked
+from app.db import authenticate_user as _sqlite_auth, create_session, ensure_user, get_user_sections, is_user_blocked
 from app.legacy_db import get_legacy_connection
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -72,5 +72,6 @@ def login(payload: LoginPayload):
             "username": local_user["username"],
             "full_name": local_user["full_name"],
             "role": local_user["role"],
+            "sections": get_user_sections(local_user["username"]),
         },
     }

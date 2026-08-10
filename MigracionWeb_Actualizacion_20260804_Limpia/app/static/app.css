@@ -2679,11 +2679,43 @@ tbody tr.is-selected td {
 }
 
 .user-modal-card {
-  width: min(560px, 100%);
+  width: min(760px, 100%);
 }
 
 .user-modal-card #user-save-btn {
   margin-top: 16px;
+}
+
+.user-permissions-field {
+  margin-top: 14px;
+}
+
+.user-permissions-field .muted {
+  margin: 4px 0 10px;
+  font-size: 12px;
+}
+
+.user-permissions-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 8px 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.user-permissions-grid label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+@media (max-width: 650px) {
+  .user-permissions-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
 }
 
 

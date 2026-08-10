@@ -493,6 +493,7 @@ const moduleMeta = {
 let token = "";
 let currentUserRole = null;
 let currentUserName = "";
+let currentUserSections = null;
 let activeModule = "home";
 let homeSalesVisible = false;
 let selectedCustomerKey = "";
@@ -676,6 +677,30 @@ function isAdminOnlyModule(moduleName) {
   return ["support", "crm-configuracion", "migrations", "conciliacion"].includes(moduleName);
 }
 
+const USER_SECTION_OPTIONS = [
+  ["billing", "Facturacion"],
+  ["mio", "MIO"],
+  ["collections", "Cobranza"],
+  ["comandas", "Comandas"],
+  ["customers", "Clientes"],
+  ["products", "Productos"],
+  ["reports", "Reportes"],
+  ["crm-clientes", "CRM · Clientes"],
+  ["crm-seguimientos", "CRM · Seguimientos"],
+  ["crm-prospector", "CRM · Prospector"],
+  ["crm-cotizar", "CRM · Cotizar"],
+  ["crm-seguimiento", "CRM · Nuevo seguimiento"],
+  ["cadenas", "Cadenas"],
+];
+
+function hasModulePermission(moduleName) {
+  if (isAdminProfile()) return true;
+  if (isAdminOnlyModule(moduleName)) return false;
+  // Sin configuracion individual se conserva el comportamiento original del perfil.
+  if (!Array.isArray(currentUserSections)) return true;
+  return moduleName === "home" || currentUserSections.includes(moduleName);
+}
+
 function updateNavPermissions() {
   const isAdmin = isAdminProfile();
   document.querySelectorAll('[data-admin-only="support"]').forEach((group) => {
@@ -687,6 +712,14 @@ function updateNavPermissions() {
   });
   document.querySelectorAll('.subnav-item[data-module="support"], .subnav-item[data-module="crm-configuracion"], .subnav-item[data-module="migrations"], .subnav-item[data-module="conciliacion"]').forEach((item) => {
     item.classList.toggle("hidden", !isAdmin);
+  });
+  document.querySelectorAll(".nav-item[data-module]").forEach((item) => {
+    item.classList.toggle("hidden", !hasModulePermission(item.dataset.module));
+  });
+  document.querySelectorAll(".nav-group").forEach((group) => {
+    const hasVisibleChild = [...group.querySelectorAll(".subnav-item[data-module]")]
+      .some((item) => !item.classList.contains("hidden"));
+    if (!group.hasAttribute("data-admin-only")) group.classList.toggle("hidden", !hasVisibleChild);
   });
 }
 
@@ -8681,8 +8714,8 @@ async function openPrealtaInfo() {
 }
 
 async function switchModule(moduleName) {
-  if (isAdminOnlyModule(moduleName) && !isAdminProfile()) {
-    alert("Este modulo solo esta disponible para perfiles de administrador.");
+  if (!hasModulePermission(moduleName)) {
+    alert("No tienes permiso para ingresar a esta seccion.");
     moduleName = "home";
   }
   activeModule = moduleName;
@@ -8760,6 +8793,7 @@ loginForm.addEventListener("submit", async (event) => {
     token = data.token;
     currentUserRole = data.user.role;
     currentUserName = data.user.full_name || data.user.username || "";
+    currentUserSections = Array.isArray(data.user.sections) ? data.user.sections : null;
     document.getElementById("sidebar-username").textContent = currentUserName;
     updateSessionButtons();
     updateNavPermissions();
@@ -10180,6 +10214,7 @@ logoutButton.addEventListener("click", () => {
   token = "";
   currentUserRole = null;
   currentUserName = "";
+  currentUserSections = null;
   homeSalesVisible = false;
   document.getElementById("sidebar-username").textContent = "---";
   updateNavPermissions();
@@ -12004,13 +12039,17 @@ function initSupportUserControls() {
   document.getElementById("user-modal-close")?.addEventListener("click", hideUserModal);
   userModal?.addEventListener("click", (e) => { if (e.target === e.currentTarget) hideUserModal(); });
   userForm?.addEventListener("submit", saveUser);
+  userRole?.addEventListener("change", () => {
+    const existing = editingUserId ? currentUsers.find((item) => Number(item.id) === Number(editingUserId)) : null;
+    renderUserSectionPermissions(existing?.sections, userRole.value);
+  });
   document.getElementById("users-table-body")?.addEventListener("click", (e) => {
     const editBtn = e.target.closest(".user-edit");
     if (editBtn) {
       const id = parseInt(editBtn.dataset.id);
-      const tr = editBtn.closest("tr");
-      const cells = tr.querySelectorAll("td");
-      showUserModal({ id, username: cells[0].textContent.trim(), role: cells[1].textContent.trim() });
+      const selected = currentUsers.find((item) => Number(item.id) === Number(id));
+      if (!selected) return alert("No se encontro el usuario seleccionado.");
+      showUserModal(selected);
       return;
     }
     const delBtn = e.target.closest(".user-delete");
@@ -12199,6 +12238,27 @@ const userPassword = document.getElementById("user-password");
 const userSaveBtn = document.getElementById("user-save-btn");
 
 let editingUserId = null;
+let currentUsers = [];
+
+function userSectionKeys() {
+  return USER_SECTION_OPTIONS.map(([key]) => key);
+}
+
+function renderUserSectionPermissions(sections = null, role = "consulta") {
+  const container = document.getElementById("user-section-permissions");
+  if (!container) return;
+  const selected = Array.isArray(sections) ? new Set(sections) : new Set(userSectionKeys());
+  const isAdmin = String(role || "").toLowerCase() === "admin" || String(role || "").toLowerCase() === "administrador";
+  container.innerHTML = USER_SECTION_OPTIONS.map(([key, label]) => `
+    <label title="${escapeAttr(label)}">
+      <input type="checkbox" value="${escapeAttr(key)}" ${selected.has(key) || isAdmin ? "checked" : ""} ${isAdmin ? "disabled" : ""}>
+      <span>${escapeCell(label)}</span>
+    </label>`).join("");
+}
+
+function selectedUserSections() {
+  return [...document.querySelectorAll("#user-section-permissions input:checked")].map((input) => input.value);
+}
 
 async function loadUsers() {
   try {
@@ -12211,6 +12271,7 @@ async function loadUsers() {
 
 function renderUsers(users) {
   if (!usersTableBody) return;
+  currentUsers = users || [];
   if (!users || !users.length) {
     usersTableBody.innerHTML = `<tr><td colspan="5" class="muted">Sin usuarios</td></tr>`;
     return;
@@ -12236,6 +12297,7 @@ function showUserModal(user) {
   userRole.value = user ? user.role : "consulta";
   userPassword.value = "";
   userPassword.required = !user;
+  renderUserSectionPermissions(user?.sections, user?.role || "consulta");
   userModal.classList.remove("hidden");
   userUsername.focus();
 }
@@ -12254,13 +12316,14 @@ async function saveUser(e) {
     username: userUsername.value.trim(),
     role: userRole.value,
     password: userPassword.value,
+    sections: selectedUserSections(),
   };
   try {
     if (editingUserId) {
       await apiJson(`/api/users/${editingUserId}`, {
         method: "PUT",
         headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ role: payload.role, active: 1 }),
+        body: JSON.stringify({ role: payload.role, active: 1, sections: payload.sections }),
       });
       if (payload.password) {
         await apiJson(`/api/users/${editingUserId}/password`, {
