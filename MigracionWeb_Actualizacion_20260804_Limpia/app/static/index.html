@@ -1847,7 +1847,24 @@
                   </div>
                 </div>
                 <div id="timb-rec-list" style="margin-top:12px"></div>
-                <div id="timb-rec-form" style="display:none;margin-top:12px">
+                <div id="timb-rec-modal" class="modal hidden">
+                  <div class="modal-card" style="width:min(1120px,96vw);max-height:90vh;overflow:auto;padding:24px">
+                    <div class="summary-head">
+                      <div><p class="section-kicker">Datos fiscales del receptor</p><h3 id="timb-rec-modal-title">Nuevo receptor fiscal</h3></div>
+                      <button type="button" class="mio-action mio-red" onclick="timbradoCancelarReceptor()">Cerrar</button>
+                    </div>
+                    <div style="margin:14px 0;padding:14px;border:1px solid #cbd8e6;border-radius:10px;background:#f7fbff">
+                      <strong>Buscar cliente de la empresa seleccionada</strong>
+                      <div class="toolbar-actions" style="margin-top:8px">
+                        <input id="timb-rec-cliente-buscar" class="form-input" style="min-width:260px" placeholder="Número o nombre del cliente" />
+                        <button type="button" class="mio-action mio-teal" onclick="buscarClienteBaseReceptorFiscal()">Buscar</button>
+                        <select id="timb-rec-cliente-resultados" class="timbrado-select" style="min-width:360px" onchange="cargarClienteBaseEnReceptorFiscal(this.value)">
+                          <option value="">Selecciona un cliente para cargar sus datos fiscales</option>
+                        </select>
+                      </div>
+                      <p class="muted" style="margin:8px 0 0">Se cargan razón social, RFC, CP, domicilio, correo y días de crédito. Régimen y uso CFDI se capturan según la constancia fiscal del receptor.</p>
+                    </div>
+                <div id="timb-rec-form" style="display:block;margin-top:12px">
                   <div class="timbrado-form-grid-3">
                     <div><label>Clave Receptor</label><input id="timb-rec-clave" class="form-input" /></div>
                     <div><label>Alias</label><input id="timb-rec-alias" class="form-input" /></div>
@@ -1871,6 +1888,8 @@
                   <div class="toolbar-actions" style="margin-top:12px">
                     <button type="button" class="mio-action mio-blue" onclick="guardarReceptorFiscal()">Guardar Receptor</button>
                     <button type="button" class="mio-action mio-red" onclick="timbradoCancelarReceptor()">Cancelar</button>
+                  </div>
+                </div>
                   </div>
                 </div>
               </section>

@@ -2408,6 +2408,37 @@ def buscar_clientes_base(empresa: str, texto: str = ""):
         conn.close()
 
 
+@router.get("/clientes-base/{empresa}/{cliente_numero}")
+def obtener_cliente_base_fiscal(empresa: str, cliente_numero: str):
+    """Obtiene datos fiscales del cliente legado para precargar un receptor."""
+    conn = get_legacy_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        empresa_norm = _texto_empresa_cmp(empresa)
+        numero_norm = str(cliente_numero or "").strip().replace(",", "")
+        cur.execute(
+            """
+            SELECT CAST(numero AS CHAR) AS numero, nombre, empresa, razon_social, rfc,
+                   codigo_postal, calle, no_exterior, no_interior, colonia,
+                   COALESCE(municipio, alcaldia, '') AS municipio, estado, pais,
+                   correo_electronico, dias_credito
+            FROM clientes
+            WHERE REPLACE(CAST(numero AS CHAR), ',', '') = %s
+            ORDER BY id DESC
+            """,
+            (numero_norm,),
+        )
+        for row in cur.fetchall() or []:
+            if _texto_empresa_cmp(row.get("empresa") or "") == empresa_norm:
+                data = dict(row)
+                data["numero"] = str(data.get("numero") or "").strip()
+                return data
+        raise HTTPException(status_code=404, detail="No se encontró el cliente en la empresa seleccionada.")
+    finally:
+        cur.close()
+        conn.close()
+
+
 @router.get("/consignatarios-clientes/{empresa}/{cliente_numero}")
 def ver_consignatario_cliente(empresa: str, cliente_numero: str):
     with get_timbrado_connection() as conn:

@@ -18137,9 +18137,61 @@ async function editarReceptorFiscal(clave) {
     document.getElementById("timb-rec-buyer").value = data.gln_emisor_buyer || "";
     document.getElementById("timb-rec-dias").value = data.dias_credito || "";
     document.getElementById("timb-rec-correo").value = data.correo_envio || "";
-    document.getElementById("timb-rec-form").style.display = "block";
+    abrirModalReceptorFiscal(`Editar receptor fiscal: ${data.clave_receptor}`);
   } catch (e) {
     console.error(e);
+  }
+}
+
+function abrirModalReceptorFiscal(titulo = "Nuevo receptor fiscal") {
+  const empresa = document.getElementById("timb-rec-empresa").value;
+  if (!empresa) return alert("Selecciona primero la empresa.");
+  document.getElementById("timb-rec-modal-title").textContent = titulo;
+  document.getElementById("timb-rec-modal").classList.remove("hidden");
+}
+
+async function buscarClienteBaseReceptorFiscal() {
+  const empresa = document.getElementById("timb-rec-empresa").value;
+  const texto = document.getElementById("timb-rec-cliente-buscar").value.trim();
+  if (!empresa) return alert("Selecciona primero la empresa.");
+  const select = document.getElementById("timb-rec-cliente-resultados");
+  try {
+    const rows = await apiJson(`/timbrado/clientes-base?empresa=${encodeURIComponent(empresa)}&texto=${encodeURIComponent(texto)}`);
+    select.innerHTML = '<option value="">Selecciona un cliente para cargar sus datos fiscales</option>';
+    (rows || []).forEach((cliente) => {
+      const option = document.createElement("option");
+      option.value = cliente.numero || "";
+      option.textContent = `${cliente.numero || ""} - ${cliente.nombre || ""}`;
+      select.appendChild(option);
+    });
+    if (!rows?.length) alert("No se encontraron clientes para esa empresa.");
+  } catch (error) {
+    alert(error.message || "No se pudo buscar el cliente.");
+  }
+}
+
+async function cargarClienteBaseEnReceptorFiscal(numero) {
+  const empresa = document.getElementById("timb-rec-empresa").value;
+  if (!empresa || !numero) return;
+  try {
+    const cliente = await apiJson(`/timbrado/clientes-base/${encodeURIComponent(empresa)}/${encodeURIComponent(numero)}`);
+    document.getElementById("timb-rec-clave").value = cliente.numero || numero;
+    document.getElementById("timb-rec-alias").value = cliente.nombre || "";
+    document.getElementById("timb-rec-rs").value = cliente.razon_social || cliente.nombre || "";
+    document.getElementById("timb-rec-rfc").value = cliente.rfc || "";
+    document.getElementById("timb-rec-cp").value = cliente.codigo_postal || "";
+    document.getElementById("timb-rec-calle").value = cliente.calle || "";
+    document.getElementById("timb-rec-ext").value = cliente.no_exterior || "";
+    document.getElementById("timb-rec-int").value = cliente.no_interior || "";
+    document.getElementById("timb-rec-col").value = cliente.colonia || "";
+    document.getElementById("timb-rec-mun").value = cliente.municipio || "";
+    document.getElementById("timb-rec-est").value = cliente.estado || "";
+    document.getElementById("timb-rec-pais").value = cliente.pais || "Mexico";
+    document.getElementById("timb-rec-dias").value = cliente.dias_credito || "";
+    document.getElementById("timb-rec-correo").value = cliente.correo_electronico || "";
+    document.getElementById("timb-rec-regimen").focus();
+  } catch (error) {
+    alert(error.message || "No se pudieron cargar los datos fiscales del cliente.");
   }
 }
 
@@ -18182,13 +18234,16 @@ async function guardarReceptorFiscal() {
 }
 
 function timbradoNuevoReceptor() {
+  if (!document.getElementById("timb-rec-empresa").value) return alert("Selecciona primero la empresa.");
   document.getElementById("timb-rec-form").querySelectorAll("input").forEach((i) => i.value = "");
   document.getElementById("timb-rec-pais").value = "Mexico";
-  document.getElementById("timb-rec-form").style.display = "block";
+  document.getElementById("timb-rec-cliente-buscar").value = "";
+  document.getElementById("timb-rec-cliente-resultados").innerHTML = '<option value="">Selecciona un cliente para cargar sus datos fiscales</option>';
+  abrirModalReceptorFiscal("Nuevo receptor fiscal");
 }
 
 function timbradoCancelarReceptor() {
-  document.getElementById("timb-rec-form").style.display = "none";
+  document.getElementById("timb-rec-modal").classList.add("hidden");
 }
 
 async function eliminarReceptorFiscal(clave) {
