@@ -5022,11 +5022,12 @@ async function descargarCfdiSeleccionadosMio(invoices) {
   const tipos = await openCfdiDownloadModal(conCfdi);
   if (!tipos) return;
   const folios = conCfdi.map(folioFiscalDeInvoice);
-  if (folios.length === 1) {
-    for (const tipo of tipos) {
-      const response = await apiFetch(`/timbrado/cfdi-emitidos/${encodeURIComponent(folios[0])}/${tipo}`, { headers: authHeaders() });
-      await descargarBlobRespuesta(response, `${folios[0]}.${tipo}`);
-    }
+  // Los navegadores suelen bloquear la segunda descarga automática. Para PDF
+  // + XML usamos el mismo ZIP de lote, incluso si solamente hay un CFDI.
+  if (folios.length === 1 && tipos.length === 1) {
+    const tipo = tipos[0];
+    const response = await apiFetch(`/timbrado/cfdi-emitidos/${encodeURIComponent(folios[0])}/${tipo}`, { headers: authHeaders() });
+    await descargarBlobRespuesta(response, `${folios[0]}.${tipo}`);
     return;
   }
   const response = await apiFetch("/timbrado/cfdi-emitidos/descarga-lote", {

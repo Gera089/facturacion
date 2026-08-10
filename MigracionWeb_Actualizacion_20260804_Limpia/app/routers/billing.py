@@ -275,11 +275,11 @@ def _resolve_company_aliases(raw_company: str) -> list[str]:
 def _folio_prefix_for_company(company: str) -> str:
     text = str(company or "").strip().lower()
     if "gourmet" in text:
-        return "00A"
+        return "FE"
     if "ibersur" in text:
         return "A00"
     if "eza2007" in text:
-        return "CFDI"
+        return "EZ"
     if "remision" in text or "remisión" in text:
         return "R00"
     return "000"
@@ -312,8 +312,11 @@ def _company_from_folio(folio: str) -> str:
         return "IBERSUR"
     if text.startswith("R00"):
         return "REMISION"
-    if text.startswith("00A"):
+    # Las series anteriores siguen identificándose para importaciones históricas.
+    if text.startswith("FE") or text.startswith("00A"):
         return "GOURMET ESPAÑA"
+    if text.startswith("EZ") or text.startswith("CFDI"):
+        return "EZA2007"
     return ""
 
 
