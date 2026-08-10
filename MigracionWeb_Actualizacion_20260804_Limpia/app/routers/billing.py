@@ -323,6 +323,10 @@ def _company_from_folio(folio: str) -> str:
 def _increment_folio(last_folio: str, prefix: str) -> str:
     match = re.search(r"(\d+)$", str(last_folio or "").strip())
     next_number = int(match.group(1)) + 1 if match else 1
+    # Las nuevas series internas EZ (EZA2007) y FE (Gourmet España)
+    # no llevan relleno de ceros: EZ1, FE1, etc.
+    if str(prefix or "").upper() in {"EZ", "FE"}:
+        return f"{prefix}{next_number}"
     min_width = 3 if str(prefix or "").upper() == "A00" else 5
     width = max(min_width, len(str(next_number)))
     return f"{prefix}{str(next_number).zfill(width)}"
