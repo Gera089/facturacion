@@ -19615,12 +19615,13 @@ async function procesarColaTimbrado(maxItems = 1) {
     const res = await apiJson(`/timbrado/cola/procesar?max_items=${encodeURIComponent(maxItems)}`, { method: "POST", headers: { ...authHeaders() } });
     if (res && res.resultados) {
       const r = res.resultados[0];
+      const ajuste = r?.ajuste_total_fiscal?.modificado ? `\n\n${r.ajuste_total_fiscal.mensaje || "El total local fue actualizado por conciliación fiscal."}` : "";
       if (r && r.procesado) {
-        alert(`Factura ${r.factura} timbrada (modo: ${r.modo}). UUID: ${r.uuid}`);
+        alert(`Factura ${r.factura} timbrada (modo: ${r.modo}). UUID: ${r.uuid}${ajuste}`);
       } else if (r && r.bloqueo_pac) {
-        alert(`Factura ${r.factura} lista para PAC, pero el proveedor aun no esta integrado.\n\nSe genero XML pre-PAC sin consumir folio.`);
+        alert(`Factura ${r.factura} lista para PAC, pero el proveedor aun no esta integrado.\n\nSe genero XML pre-PAC sin consumir folio.${ajuste}`);
       } else if (r && r.detalle) {
-        alert(r.detalle);
+        alert(r.detalle + ajuste);
       }
     }
     cargarColaTimbrado();
@@ -19637,12 +19638,13 @@ async function procesarFolioControladoTimbrado(folioParam) {
       headers: { ...authHeaders() },
     });
     const r = (res.resultados || [])[0] || {};
+    const ajuste = r?.ajuste_total_fiscal?.modificado ? `\n\n${r.ajuste_total_fiscal.mensaje || "El total local fue actualizado por conciliación fiscal."}` : "";
     if (r.procesado) {
-      alert(`Factura ${r.factura} timbrada por ${r.modo}.\nFolio: ${(r.serie || "")}${r.folio_cfdi || ""}\nUUID: ${r.uuid || ""}`);
+      alert(`Factura ${r.factura} timbrada por ${r.modo}.\nFolio: ${(r.serie || "")}${r.folio_cfdi || ""}\nUUID: ${r.uuid || ""}${ajuste}`);
     } else if (r.bloqueo_pac) {
-      alert(`Factura ${r.factura} quedo bloqueada para PAC.\n\n${r.detalle || "Se genero XML pre-PAC sin consumir folio."}`);
+      alert(`Factura ${r.factura} quedo bloqueada para PAC.\n\n${r.detalle || "Se genero XML pre-PAC sin consumir folio."}${ajuste}`);
     } else {
-      alert(r.detalle || "No se proceso la factura.");
+      alert((r.detalle || r.error || "No se proceso la factura.") + ajuste);
     }
     await cargarColaTimbrado();
     await cargarCFDIEmitidos().catch(() => {});
@@ -19665,9 +19667,10 @@ async function procesarSeleccionControladaTimbrado() {
     });
     const resultados = res.resultados || [];
     const detalle = resultados.map((r) => {
-      if (r.procesado) return `${r.folio || r.factura}: TIMBRADA ${(r.serie || "")}${r.folio_cfdi || ""} ${r.uuid || ""}`;
-      if (r.bloqueo_pac) return `${r.folio || r.factura}: BLOQUEADA PAC`;
-      return `${r.folio || r.factura}: ${r.detalle || "sin procesar"}`;
+      const ajuste = r?.ajuste_total_fiscal?.modificado ? ` [${r.ajuste_total_fiscal.actualizado}: total fiscal actualizado]` : "";
+      if (r.procesado) return `${r.folio || r.factura}: TIMBRADA ${(r.serie || "")}${r.folio_cfdi || ""} ${r.uuid || ""}${ajuste}`;
+      if (r.bloqueo_pac) return `${r.folio || r.factura}: BLOQUEADA PAC${ajuste}`;
+      return `${r.folio || r.factura}: ${r.detalle || r.error || "sin procesar"}${ajuste}`;
     }).join("\n");
     alert(`Lote controlado terminado.\nProcesadas: ${res.procesadas || 0} de ${res.total_solicitadas || seleccion.length}${res.detenido ? "\nDetenido por pendiente/error." : ""}${detalle ? "\n\n" + detalle : ""}`);
     await cargarColaTimbrado();

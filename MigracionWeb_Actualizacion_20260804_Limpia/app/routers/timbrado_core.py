@@ -2451,28 +2451,40 @@ def _distribuir_descuento_cfdi(descuento_total, importes):
     return descuentos
 
 
-def _descuento_cfdi_compatible_con_total(subtotal, descuento_origen, impuestos, total):
-    """Conserva el total de la remisión y corrige únicamente un redondeo de descuento.
+def _actualizar_total_local_desde_fiscal(conn_legacy, factura):
+    """Alinea el total guardado con la aritmética fiscal antes de timbrar.
 
-    SAE puede guardar el descuento redondeado a dos decimales y, al mismo
-    tiempo, conservar el total calculado desde los importes por partida. Si
-    ambos difieren por un centavo, el PAC rechaza el CFDI porque la identidad
-    Total = SubTotal - Descuento + Impuestos debe ser exacta. Ajustamos solo
-    esa diferencia de redondeo (máximo dos centavos), nunca el total ni las
-    cantidades/precios de la remisión.
+    La fuente fiscal es SubTotal - Descuento + Impuestos. Cuando el legado
+    conserva un total distinto por redondeo, actualizamos ese total local y
+    devolvemos el detalle para informarlo en pantalla y en la bitácora PAC.
     """
-    subtotal_dec = _money_cfdi(subtotal)
-    descuento_dec = _money_cfdi(descuento_origen)
-    impuestos_dec = _money_cfdi(impuestos)
-    total_dec = _money_cfdi(total)
-    if descuento_dec <= 0:
-        return descuento_dec
-    descuento_requerido = _money_cfdi(subtotal_dec + impuestos_dec - total_dec)
-    if descuento_requerido < 0:
-        return descuento_dec
-    if abs(descuento_requerido - descuento_dec) <= Decimal("0.02"):
-        return descuento_requerido
-    return descuento_dec
+    subtotal = _money_cfdi(factura.get("subtotal") or factura.get("total"))
+    descuento = _money_cfdi(factura.get("descuento"))
+    impuestos = _money_cfdi(factura.get("iva"))
+    anterior = _money_cfdi(factura.get("total"))
+    actualizado = _money_cfdi(subtotal - descuento + impuestos)
+    if anterior == actualizado:
+        return {"modificado": False}
+    factura_id = factura.get("id")
+    if not factura_id:
+        return {"modificado": False}
+    cur = conn_legacy.cursor()
+    try:
+        cur.execute("UPDATE facturas SET total = %s WHERE id = %s", (actualizado, int(factura_id)))
+        conn_legacy.commit()
+    finally:
+        cur.close()
+    factura["total"] = actualizado
+    return {
+        "modificado": True,
+        "anterior": _fmt_money_cfdi(anterior),
+        "actualizado": _fmt_money_cfdi(actualizado),
+        "mensaje": (
+            f"Total local actualizado por conciliación fiscal: "
+            f"{_fmt_money_cfdi(anterior)} → {_fmt_money_cfdi(actualizado)} "
+            f"(SubTotal - Descuento + Impuestos)."
+        ),
+    }
 
 
 def validar_pre_cfdi_factura(factura, config, resolucion=None, opciones_cfdi=None):
@@ -3287,15 +3299,7 @@ def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio
     subtotal_dec = _money_cfdi(factura.get("subtotal") or factura.get("total") or 0)
     iva_total_cfdi = _money_cfdi(factura.get("iva"))
     total_fiscal_dec = _money_cfdi(factura.get("total"))
-    descuento_total_cfdi = _descuento_cfdi_compatible_con_total(
-        subtotal_dec,
-        factura.get("descuento"),
-        iva_total_cfdi,
-        total_fiscal_dec,
-    )
-    # No se cambia el total, las cantidades ni los precios de la remisión.
-    # Únicamente se alinea un posible redondeo de descuento de uno/dos centavos
-    # para que el CFDI cumpla la identidad aritmética exigida por el SAT.
+    descuento_total_cfdi = _money_cfdi(factura.get("descuento"))
     subtotal = _fmt_money_cfdi(subtotal_dec)
     total = _fmt_money_cfdi(total_fiscal_dec)
     lugar_exp = str(config.get("cp_fiscal") or config.get("lugar_expedicion") or "03810").strip()
@@ -3554,6 +3558,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
             "detalle": "Ya hay una factura de esta empresa en TIMBRANDO; se evita procesar en paralelo para no duplicar folio fiscal.",
         }
     factura = _snapshot_factura(conn_legacy, int(item["factura_id"]))
+    ajuste_total_fiscal = {"modificado": False}
     config = obtener_config_timbrado(conn, item["empresa"])
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     try:
@@ -3620,6 +3625,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
             if not preflight.get("ok"):
                 raise RuntimeError("Preflight PAC fallido: " + "; ".join(preflight.get("errores") or []))
         opciones_cfdi = _opciones_cfdi_desde_item(item)
+        ajuste_total_fiscal = _actualizar_total_local_desde_fiscal(conn_legacy, factura)
         resolucion_validacion = resolver_receptor_timbrado(conn, conn_legacy, factura, incluir_preview=False)
         validacion_cfdi = validar_pre_cfdi_factura(
             factura,
@@ -3677,6 +3683,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
                     xml_path=prexml_path,
                     response={
                         "validacion_cfdi": validacion_cfdi,
+                        "ajuste_total_fiscal": ajuste_total_fiscal,
                         "sellado": {
                             "ok": bool(sellado.get("ok")),
                             "errores": sellado.get("errores") or [],
@@ -3697,6 +3704,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
                     "folio_candidato": cfdi_folio,
                     "prexml_path": prexml_path,
                     "validacion_cfdi": validacion_cfdi,
+                    "ajuste_total_fiscal": ajuste_total_fiscal,
                     "detalle": mensaje,
                 }
             
@@ -3755,6 +3763,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
                     "snapshot_path": snapshot_path,
                     "folio_sae": folio_sae,
                     "pac": resultado_pac.raw_response,
+                    "ajuste_total_fiscal": ajuste_total_fiscal,
                 },
             )
             return {
@@ -3766,6 +3775,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
                 "folio_sae": folio_sae,
                 "uuid": resultado_pac.uuid,
                 "xml_path": xml_path,
+                "ajuste_total_fiscal": ajuste_total_fiscal,
             }
         if proveedor == "SIMULADO":
             uuid_cfdi = str(uuid.uuid4()).upper()
@@ -3815,7 +3825,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
                 folio_candidato=cfdi_folio,
                 uuid_val=uuid_cfdi,
                 xml_path=xml_path,
-                response={"modo": "SIMULADO", "validacion_cfdi": validacion_cfdi},
+                response={"modo": "SIMULADO", "validacion_cfdi": validacion_cfdi, "ajuste_total_fiscal": ajuste_total_fiscal},
             )
             return {
                 "procesado": True,
@@ -3826,6 +3836,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
                 "folio_cfdi": cfdi_folio,
                 "folio_serie": folio_sae,
                 "validacion_cfdi": validacion_cfdi,
+                "ajuste_total_fiscal": ajuste_total_fiscal,
             }
         raise RuntimeError("PAC no configurado o proveedor todavia no integrado. Usa proveedor SIMULADO para pruebas.")
     except Exception as exc:
@@ -3844,7 +3855,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
             "UPDATE timbrado_queue SET estatus = ?, ultimo_error = ? WHERE id = ?",
             (ESTATUS_ERROR, str(exc), item["id"]),
         )
-        return {"procesado": False, "factura": factura.get("factura"), "error": str(exc)}
+        return {"procesado": False, "factura": factura.get("factura"), "error": str(exc), "ajuste_total_fiscal": ajuste_total_fiscal}
 
 
 def _merge_facturas(facturas):
