@@ -1881,12 +1881,17 @@ def _detectar_modo_facturacion(factura):
 def _es_venta_mostrador(factura, receptor=None):
     """Identifica el cliente genérico que usa el legado para venta de mostrador."""
     receptor = receptor or {}
+    empresa = _normalizar_empresa(factura.get("empresa"))
     numeros = (
         factura.get("numero_cliente"),
         factura.get("numero_cliente_cfdi"),
         receptor.get("numero"),
     )
-    return any(str(numero or "").strip().replace(",", "") == "100000" for numero in numeros)
+    numeros_normalizados = {str(numero or "").strip().replace(",", "") for numero in numeros}
+    if "100000" in numeros_normalizados:
+        return True
+    # 160006 es otra clave de venta de mostrador, pero únicamente en EZA2007.
+    return empresa == "EZA2007" and "160006" in numeros_normalizados
 
 
 def _receptor_publico_general(config):
