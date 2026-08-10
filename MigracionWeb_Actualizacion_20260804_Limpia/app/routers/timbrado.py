@@ -3642,6 +3642,9 @@ def _buscar_cfdi_emitido_por_folio(conn, folio: str):
 
 
 def _descargar_archivo_cfdi(row: dict, campo: str, extension: str, media_type: str):
+    if campo == "xml_path":
+        row = dict(row)
+        row["xml_path"] = _resolver_xml_cfdi_en_instalacion(row)
     path = str(row.get(campo) or "").strip()
     if not path and campo == "pdf_path":
         xml_path = str(row.get("xml_path") or "").strip()
@@ -3661,6 +3664,31 @@ def _descargar_archivo_cfdi(row: dict, campo: str, extension: str, media_type: s
         filename=filename,
         headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
     )
+
+
+def _resolver_xml_cfdi_en_instalacion(row: dict) -> str:
+    """Recupera XML cuando la BD conserva una ruta de otra instalación.
+
+    El historial de CFDI es compartido, pero cada servidor puede tener una
+    carpeta de almacenamiento distinta. La búsqueda se limita al directorio
+    fiscal de la empresa y al nombre esperado del propio CFDI.
+    """
+    registrado = str(row.get("xml_path") or "").strip()
+    if registrado and os.path.isfile(registrado):
+        return registrado
+    empresa = str(row.get("empresa") or "SIN_EMPRESA").strip()
+    base = Path(ruta_empresa_fiscal(empresa))
+    nombre = Path(registrado).name if registrado else ""
+    serie_folio = _folio_serie(row) or str(row.get("folio_cfdi") or "").strip()
+    factura = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(row.get("factura") or "")).strip("._")
+    if not nombre and factura:
+        nombre = f"{factura}-{serie_folio}.xml"
+    candidatos = list(base.glob(f"*/xml/{nombre}")) if nombre else []
+    if not candidatos and factura:
+        candidatos = list(base.glob(f"*/xml/{factura}-*.xml"))
+    if len(candidatos) == 1 and candidatos[0].is_file():
+        return str(candidatos[0])
+    return registrado
 
 
 def _datos_consulta_sat_desde_xml(row: dict) -> dict:
@@ -3722,7 +3750,9 @@ def _obtener_correo_documento(conn, tipo_documento: str, empresa: str = ""):
 def _generar_pdf_cfdi_bytes(row: dict) -> bytes:
     from app.routers.timbrado_pdf import generar_cfdi_pdf
     import xml.etree.ElementTree as ET
-    xml_path = str(row.get("xml_path") or "").strip()
+    row = dict(row)
+    xml_path = _resolver_xml_cfdi_en_instalacion(row)
+    row["xml_path"] = xml_path
     if not xml_path or not os.path.exists(xml_path):
         raise HTTPException(status_code=404, detail="No se encontro el XML para generar el PDF.")
     tree = ET.parse(xml_path)
@@ -4767,7 +4797,8 @@ def descargar_lote_cfdi_emitidos(payload: dict):
                 nombre = f"{nombre_base}-{secuencia}"
                 secuencia += 1
             usados.add(nombre.lower())
-            xml_path = str(row.get("xml_path") or "").strip()
+            xml_path = _resolver_xml_cfdi_en_instalacion(row)
+            row["xml_path"] = xml_path
 
             if "xml" in tipos:
                 if xml_path and os.path.isfile(xml_path):
