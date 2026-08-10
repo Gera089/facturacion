@@ -4731,3 +4731,62 @@ def descargar_cfdi_pdf(folio: str):
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generando PDF: {e}")
+
+
+@router.post("/cfdi-emitidos/descarga-lote")
+def descargar_lote_cfdi_emitidos(payload: dict):
+    """Entrega en ZIP los XML y/o PDF de varios CFDI seleccionados desde MIO."""
+    folios = []
+    for value in (payload.get("folios") or []):
+        folio = str(value or "").strip()
+        if folio and folio not in folios:
+            folios.append(folio)
+    tipos = {str(value or "").strip().lower() for value in (payload.get("tipos") or [])}
+    tipos &= {"xml", "pdf"}
+    if not folios:
+        raise HTTPException(status_code=400, detail="Selecciona al menos un CFDI.")
+    if len(folios) > 100:
+        raise HTTPException(status_code=400, detail="El límite de descarga es de 100 CFDI por archivo ZIP.")
+    if not tipos:
+        raise HTTPException(status_code=400, detail="Selecciona PDF, XML o ambos formatos.")
+
+    pendientes = []
+    buf = io.BytesIO()
+    usados: set[str] = set()
+    with get_timbrado_connection() as conn, zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for folio in folios:
+            try:
+                row = _buscar_cfdi_emitido_por_folio(conn, folio)
+            except HTTPException:
+                pendientes.append(f"{folio}: no se encontró CFDI emitido")
+                continue
+            nombre = _safe_package_name(_folio_serie(row) or folio) or "cfdi"
+            nombre_base = nombre
+            secuencia = 2
+            while nombre.lower() in usados:
+                nombre = f"{nombre_base}-{secuencia}"
+                secuencia += 1
+            usados.add(nombre.lower())
+            xml_path = str(row.get("xml_path") or "").strip()
+
+            if "xml" in tipos:
+                if xml_path and os.path.isfile(xml_path):
+                    zf.write(xml_path, f"{nombre}/{nombre}.xml")
+                else:
+                    pendientes.append(f"{folio}: XML no disponible en servidor")
+            if "pdf" in tipos:
+                try:
+                    pdf_bytes = _generar_pdf_cfdi_bytes(row)
+                    zf.writestr(f"{nombre}/{nombre}.pdf", pdf_bytes)
+                except Exception as exc:
+                    pendientes.append(f"{folio}: PDF no disponible ({exc})")
+        if pendientes:
+            zf.writestr("incidencias.txt", "\n".join(pendientes))
+    buf.seek(0)
+    fecha = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"CFDI_seleccionados_{fecha}.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

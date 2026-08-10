@@ -4513,6 +4513,11 @@ function actualizarSeleccionFacturasMio() {
   }
   const boton = document.getElementById("billing-enviar-timbrado");
   if (boton) boton.textContent = seleccionadas.length > 1 ? `Consolidar y emitir (${seleccionadas.length})` : "Enviar a Timbrado";
+  if (billingResendCfdi) {
+    billingResendCfdi.textContent = seleccionadas.length
+      ? `Descargar CFDI (${seleccionadas.length})`
+      : "Reenviar CFDI por correo";
+  }
 }
 
 function renderBillingDetailEmpty(text = "Selecciona una factura.") {
@@ -4949,6 +4954,87 @@ async function resendSelectedCfdiByEmail() {
     empresa: invoice.empresa || "",
     numeroCliente: invoice.numero_cliente || "",
   });
+}
+
+function folioFiscalDeInvoice(invoice) {
+  const serie = String(invoice?.serie_cfdi_emitida || "").trim();
+  const folio = String(invoice?.folio_cfdi_emitido || "").trim();
+  return (serie && folio ? `${serie}${folio}` : String(invoice?.sae_codigo || folio || "").trim());
+}
+
+function descargarBlobRespuesta(response, fallbackName) {
+  if (!response.ok) {
+    return response.json().catch(() => ({})).then((data) => {
+      throw new Error(data.detail || "No se pudo descargar el CFDI.");
+    });
+  }
+  return response.blob().then((blob) => {
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const anchor = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    anchor.href = url;
+    anchor.download = match?.[1] || fallbackName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  });
+}
+
+function openCfdiDownloadModal(invoices) {
+  return new Promise((resolve) => {
+    const cantidad = invoices.length;
+    const overlay = document.createElement("div");
+    overlay.className = "modal modal-front";
+    overlay.innerHTML = `
+      <div class="modal-card" style="width:min(520px,100%);padding:24px">
+        <h3 style="margin-top:0">${cantidad === 1 ? `Descargar CFDI ${escapeCell(folioFiscalDeInvoice(invoices[0]))}` : `Descargar ${cantidad} CFDI seleccionados`}</h3>
+        <p class="muted">${cantidad === 1 ? "Selecciona el archivo que deseas descargar." : "Se generará un archivo ZIP con los documentos seleccionados."}</p>
+        <label style="display:flex;align-items:center;gap:9px;margin:15px 0"><input type="checkbox" data-cfdi-pdf checked> PDF</label>
+        <label style="display:flex;align-items:center;gap:9px;margin:15px 0"><input type="checkbox" data-cfdi-xml checked> XML</label>
+        <p data-download-error style="min-height:18px;margin:12px 0 0;color:#b42318;font-size:13px"></p>
+        <div class="modal-actions"><button type="button" class="secondary-button" data-cancel>Cancelar</button><button type="button" class="mio-action mio-teal" data-download>${cantidad === 1 ? "Descargar" : "Descargar ZIP"}</button></div>
+      </div>`;
+    const close = (value) => { overlay.remove(); resolve(value); };
+    overlay.querySelector("[data-cancel]").onclick = () => close(null);
+    overlay.querySelector("[data-download]").onclick = () => {
+      const tipos = [];
+      if (overlay.querySelector("[data-cfdi-pdf]").checked) tipos.push("pdf");
+      if (overlay.querySelector("[data-cfdi-xml]").checked) tipos.push("xml");
+      if (!tipos.length) {
+        overlay.querySelector("[data-download-error]").textContent = "Selecciona PDF, XML o ambos formatos.";
+        return;
+      }
+      close(tipos);
+    };
+    overlay.addEventListener("click", (event) => { if (event.target === overlay) close(null); });
+    document.body.appendChild(overlay);
+  });
+}
+
+async function descargarCfdiSeleccionadosMio(invoices) {
+  const conCfdi = invoices.filter((invoice) => folioFiscalDeInvoice(invoice) && (invoice.uuid_emitido || invoice.cfdi_uuid || invoice.folio_cfdi_emitido || invoice.sae_codigo));
+  if (!conCfdi.length) throw new Error("Las facturas seleccionadas no tienen CFDI emitido para descargar.");
+  if (conCfdi.length !== invoices.length) {
+    alert(`Se omitirán ${invoices.length - conCfdi.length} factura(s) sin CFDI emitido.`);
+  }
+  const tipos = await openCfdiDownloadModal(conCfdi);
+  if (!tipos) return;
+  const folios = conCfdi.map(folioFiscalDeInvoice);
+  if (folios.length === 1) {
+    for (const tipo of tipos) {
+      const response = await apiFetch(`/timbrado/cfdi-emitidos/${encodeURIComponent(folios[0])}/${tipo}`, { headers: authHeaders() });
+      await descargarBlobRespuesta(response, `${folios[0]}.${tipo}`);
+    }
+    return;
+  }
+  const response = await apiFetch("/timbrado/cfdi-emitidos/descarga-lote", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ folios, tipos }),
+  });
+  await descargarBlobRespuesta(response, "CFDI_seleccionados.zip");
 }
 
 async function cancelSelectedInvoice() {
@@ -10497,7 +10583,11 @@ billingReprint?.addEventListener("click", () => {
 });
 
 billingResendCfdi?.addEventListener("click", () => {
-  resendSelectedCfdiByEmail().catch((error) => alert(error.message || "No se pudo reenviar el CFDI."));
+  const seleccionadas = facturasSeleccionadasMio();
+  const accion = seleccionadas.length
+    ? descargarCfdiSeleccionadosMio(seleccionadas)
+    : resendSelectedCfdiByEmail();
+  accion.catch((error) => alert(error.message || "No se pudo completar la operación con el CFDI."));
 });
 
 billingImport?.addEventListener("click", () => {

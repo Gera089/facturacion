@@ -2,8 +2,8 @@
 ; administra el proceso, registra servicio automático y conserva logs.
 
 #define MyAppName "Facturación Web API"
-#define MyAppVersion "2026.08.10.1"
-#define MyBuildId "2026.08.10-catalogo-parrafos-alineados-1"
+#define MyAppVersion "2026.08.10.2"
+#define MyBuildId "2026.08.10-fichas-imagenes-empaquetadas-1"
 #define MyApiExeName "FacturacionWebApi.exe"
 #define MyApiServiceName "FacturacionWebAPI"
 #define ProjectRoot (SourcePath + "\\..")

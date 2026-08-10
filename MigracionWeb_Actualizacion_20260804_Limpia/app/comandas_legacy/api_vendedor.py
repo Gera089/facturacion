@@ -5046,6 +5046,17 @@ def ruta_fichas(*partes: str) -> str:
     return os.path.join(resolver_base_fichas(), *[str(p) for p in partes])
 
 
+def ruta_fichas_empacadas(*partes: str) -> str:
+    """Ruta de respaldo incluida en el ejecutable/instalador.
+
+    En el servidor puede existir una carpeta compartida de fichas con contenido
+    incompleto o desactualizado. Esta ruta conserva una segunda fuente local
+    para que la vista de ficha y el catálogo sigan mostrando las imágenes que
+    se distribuyeron junto con la versión instalada.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "FichasTecnicas", *[str(p) for p in partes])
+
+
 def rutas_equivalentes_ficha(ruta: str | None) -> list[str]:
     original = str(ruta or "").strip()
     if not original:
@@ -6121,7 +6132,12 @@ def resolver_imagenes_producto(ficha: dict) -> dict:
     # La imagen sincronizada y la subida desde Administración usan esta misma
     # carpeta. No recorras todos los respaldos de red: uno sin conexión puede
     # bloquear la generación del PDF durante más de un minuto.
-    carpetas_producto = [ruta_fichas(empresa_dir, cip)]
+    carpetas_producto = [
+        ruta_fichas(empresa_dir, cip),
+        # En instalaciones empaquetadas la ruta activa puede resolverse a una
+        # unidad de red. Conservamos esta carpeta local como respaldo real.
+        ruta_fichas_empacadas(empresa_dir, cip),
+    ]
     if imagen_path and not str(imagen_path).startswith("\\\\"):
         carpetas_producto.append(os.path.dirname(imagen_path))
     vistas_carpetas = set()

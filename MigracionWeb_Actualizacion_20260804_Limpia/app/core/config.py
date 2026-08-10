@@ -3,7 +3,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-BUILD_ID = "2026.08.10-catalogo-parrafos-alineados-1"
+BUILD_ID = "2026.08.10-fichas-imagenes-empaquetadas-1"
 
 
 def _unique_urls(urls: list[str]) -> list[str]:
