@@ -18114,13 +18114,23 @@ async function cargarReceptoresFiscales() {
         <td>${escHtml(r.uso_cfdi || "")}</td>
         <td>${r.addenda_activa ? `<span class="badge badge-success">${escHtml(r.addenda_tipo || "Si")}</span>` : '<span class="badge badge-warning">No</span>'}</td>
         <td>
-          <button class="timbrado-mini-btn" onclick="editarReceptorFiscal('${escHtml(r.clave_receptor)}')">Editar</button>
-          <button class="timbrado-mini-btn danger" onclick="eliminarReceptorFiscal('${escHtml(r.clave_receptor)}')">Eliminar</button>
+          <button type="button" class="timbrado-mini-btn" data-receptor-action="editar" data-receptor-clave="${escapeAttr(r.clave_receptor || "")}">Editar</button>
+          <button type="button" class="timbrado-mini-btn danger" data-receptor-action="eliminar" data-receptor-clave="${escapeAttr(r.clave_receptor || "")}">Eliminar</button>
         </td>
       </tr>`;
     });
     html += "</tbody></table>";
     container.innerHTML = html;
+    // Usamos listeners por fila: evita que las claves con caracteres especiales
+    // rompan un onclick embebido y garantiza que ambos botones queden conectados.
+    container.querySelectorAll("button[data-receptor-action]").forEach((boton) => {
+      boton.addEventListener("click", () => {
+        const clave = String(boton.dataset.receptorClave || "").trim();
+        if (!clave) return alert("No se encontró la clave del receptor seleccionado.");
+        if (boton.dataset.receptorAction === "editar") editarReceptorFiscal(clave);
+        if (boton.dataset.receptorAction === "eliminar") eliminarReceptorFiscal(clave);
+      });
+    });
   } catch (e) {
     container.innerHTML = `<p class="muted">Error: ${e}</p>`;
   }
@@ -18287,10 +18297,11 @@ async function importarReceptoresFiscalesXLSX() {
 
 async function editarReceptorFiscal(clave) {
   const empresa = document.getElementById("timb-rec-empresa").value;
-  if (!empresa) return;
+  if (!empresa) return alert("Selecciona primero la empresa.");
+  if (!clave) return alert("Selecciona un receptor fiscal para editar.");
   try {
     const data = await apiJson(`/timbrado/receptores-fiscales/${encodeURIComponent(empresa)}/${encodeURIComponent(clave)}`);
-    if (!data || !data.clave_receptor) return;
+    if (!data || !data.clave_receptor) throw new Error("No se encontraron los datos del receptor.");
     document.getElementById("timb-rec-clave").value = data.clave_receptor || "";
     document.getElementById("timb-rec-alias").value = data.alias_receptor || "";
     document.getElementById("timb-rec-rs").value = data.razon_social || "";
@@ -18314,6 +18325,7 @@ async function editarReceptorFiscal(clave) {
     abrirModalReceptorFiscal(`Editar receptor fiscal: ${data.clave_receptor}`);
   } catch (e) {
     console.error(e);
+    alert(`No se pudo abrir el receptor fiscal: ${e.message || e}`);
   }
 }
 
@@ -18438,11 +18450,16 @@ function timbradoCancelarReceptor() {
 
 async function eliminarReceptorFiscal(clave) {
   const empresa = document.getElementById("timb-rec-empresa").value;
-  if (!empresa || !confirm(`Eliminar receptor ${clave}?`)) return;
+  if (!empresa) return alert("Selecciona primero la empresa.");
+  if (!clave) return alert("Selecciona un receptor fiscal para eliminar.");
+  if (!confirm(`Eliminar receptor ${clave}? Esta acción no se puede deshacer.`)) return;
   try {
     await apiJson(`/timbrado/receptores-fiscales/${encodeURIComponent(empresa)}/${encodeURIComponent(clave)}`, { method: "DELETE", headers: { ...authHeaders() } });
-    cargarReceptoresFiscales();
-  } catch (e) { console.error(e); }
+    await cargarReceptoresFiscales();
+  } catch (e) {
+    console.error(e);
+    alert(`No se pudo eliminar el receptor fiscal: ${e.message || e}`);
+  }
 }
 
 async function cargarConsignatarios() {
