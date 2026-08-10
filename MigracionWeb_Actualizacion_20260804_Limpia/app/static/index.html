@@ -1838,7 +1838,12 @@
             <div id="timbrado-panel-receptores" class="timbrado-panel hidden">
               <section class="content-card">
                 <div class="summary-head">
-                  <div><p class="section-kicker">Receptores Fiscales</p><h3>Gestion de Receptores</h3></div>
+                  <div style="display:flex;align-items:flex-end;gap:18px;flex:1;min-width:0">
+                    <div><p class="section-kicker">Receptores Fiscales</p><h3>Gestion de Receptores</h3></div>
+                    <div style="width:min(360px,100%);padding-bottom:1px">
+                      <input id="timb-rec-filtro" class="form-input" style="width:100%" autocomplete="off" oninput="programarFiltroReceptoresFiscales()" placeholder="Buscar clave, alias, RFC o razón social" />
+                    </div>
+                  </div>
                   <div class="toolbar-actions">
                     <select id="timb-rec-empresa" class="timbrado-select">
                       <option value="">-- Seleccionar empresa --</option>

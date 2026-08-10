@@ -18091,14 +18091,21 @@ async function guardarAddendaCliente() {
 async function cargarReceptoresFiscales() {
   const empresa = document.getElementById("timb-rec-empresa").value;
   const container = document.getElementById("timb-rec-list");
+  const filtro = String(document.getElementById("timb-rec-filtro")?.value || "").trim().toLocaleLowerCase("es-MX");
   try {
     const rows = await apiJson(`/timbrado/receptores-fiscales${empresa ? "?empresa=" + encodeURIComponent(empresa) : ""}`);
     if (!rows || rows.length === 0) {
       container.innerHTML = '<p class="muted">No hay receptores fiscales registrados.</p>';
       return;
     }
+    const visibles = !filtro ? rows : rows.filter((r) => [r.clave_receptor, r.alias_receptor, r.rfc, r.razon_social]
+      .some((valor) => String(valor || "").toLocaleLowerCase("es-MX").includes(filtro)));
+    if (!visibles.length) {
+      container.innerHTML = '<p class="muted">No se encontraron receptores con ese texto.</p>';
+      return;
+    }
     let html = '<table class="timbrado-table"><thead><tr><th>Clave</th><th>Alias</th><th>RFC</th><th>Razon Social</th><th>Uso CFDI</th><th>Addenda</th><th>Acciones</th></tr></thead><tbody>';
-    rows.forEach((r) => {
+    visibles.forEach((r) => {
       html += `<tr>
         <td>${escHtml(r.clave_receptor || "")}</td>
         <td>${escHtml(r.alias_receptor || "")}</td>
@@ -18120,6 +18127,11 @@ async function cargarReceptoresFiscales() {
 }
 
 let timbradoRecClienteSearchTimer = null;
+let timbradoRecFilterTimer = null;
+function programarFiltroReceptoresFiscales() {
+  clearTimeout(timbradoRecFilterTimer);
+  timbradoRecFilterTimer = setTimeout(() => cargarReceptoresFiscales(), 180);
+}
 let timbradoReceptorCamposOcultos = { gln_receptor: "", gln_emisor_buyer: "" };
 const REGIMENES_FISCALES_SAT = {
   "601": "General de Ley Personas Morales",
