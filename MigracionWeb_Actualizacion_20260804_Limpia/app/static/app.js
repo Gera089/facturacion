@@ -3977,6 +3977,10 @@ function pedirDatosFiscalesEmision(folio) {
           <input id="fiscal-emit-condiciones" maxlength="120" placeholder="Ej. 1 dias, contado, credito">
         </label>
         <label class="sat-cancel-field">
+          <span>Orden de compra</span>
+          <input id="fiscal-emit-orden-compra" maxlength="100" placeholder="Orden de compra del cliente">
+        </label>
+        <label class="sat-cancel-field">
           <span>Moneda</span>
           <input id="fiscal-emit-moneda" maxlength="3" value="MXN">
         </label>
@@ -4008,6 +4012,7 @@ function pedirDatosFiscalesEmision(folio) {
       const metodo = modal.querySelector("#fiscal-emit-metodo").value;
       const exportacion = modal.querySelector("#fiscal-emit-exportacion").value;
       const condiciones = modal.querySelector("#fiscal-emit-condiciones").value.trim();
+      const ordenCompra = modal.querySelector("#fiscal-emit-orden-compra").value.trim();
       const moneda = modal.querySelector("#fiscal-emit-moneda").value.trim().toUpperCase() || "MXN";
       const errorBox = modal.querySelector("#fiscal-emit-error");
       if (metodo === "PPD" && forma !== "99") {
@@ -4026,6 +4031,7 @@ function pedirDatosFiscalesEmision(folio) {
         metodo_pago: metodo,
         exportacion,
         condiciones_pago: condiciones,
+        orden_compra: ordenCompra,
         moneda,
       });
     });
@@ -18205,6 +18211,65 @@ async function cargarUsosCfdiReceptorFiscal(empresa, actual = "") {
   } catch (error) {
     console.warn("No se pudieron cargar los usos CFDI", error);
   }
+}
+
+const CAMPOS_IMPORTACION_RECEPTORES = [
+  "clave_receptor", "alias_receptor", "razon_social", "rfc", "regimen_fiscal", "cp_fiscal", "uso_cfdi",
+  "calle", "no_exterior", "no_interior", "colonia", "municipio", "estado", "pais", "gln_receptor",
+  "gln_emisor_buyer", "dias_credito", "correo_envio"
+];
+
+function _normalizarEncabezadoImportacion(valor) {
+  return String(valor || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
+
+function descargarPlantillaReceptoresFiscales() {
+  if (typeof XLSX === "undefined") return alert("No se encontró el componente para crear la plantilla XLSX.");
+  const encabezados = CAMPOS_IMPORTACION_RECEPTORES.map((campo) => campo.toUpperCase());
+  const ejemplo = ["100000", "CLIENTE EJEMPLO", "RAZÓN SOCIAL DEL RECEPTOR", "XAXX010101000", "616", "00000", "S01", "CALLE", "1", "", "COLONIA", "MUNICIPIO", "CIUDAD DE MEXICO", "MEXICO", "", "", "0", "correo@ejemplo.com"];
+  const ws = XLSX.utils.aoa_to_sheet([encabezados, ejemplo]);
+  ws["!cols"] = encabezados.map((campo) => ({ wch: Math.max(16, campo.length + 3) }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Receptores fiscales");
+  XLSX.writeFile(wb, "plantilla_receptores_fiscales_EZA2007.xlsx");
+}
+
+async function importarReceptoresFiscalesXLSX() {
+  const empresa = document.getElementById("timb-rec-empresa").value;
+  if (String(empresa || "").toUpperCase() !== "EZA2007") return alert("Selecciona EZA2007 antes de importar receptores fiscales.");
+  if (typeof XLSX === "undefined") return alert("No se encontró el componente para leer archivos XLSX.");
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".xlsx,.xls";
+  input.onchange = async () => {
+    const archivo = input.files?.[0];
+    if (!archivo) return;
+    try {
+      const libro = XLSX.read(await archivo.arrayBuffer(), { type: "array", cellDates: false });
+      const hoja = libro.Sheets[libro.SheetNames[0]];
+      const filas = XLSX.utils.sheet_to_json(hoja, { defval: "", raw: false });
+      const registros = filas.map((fila) => {
+        const valores = {};
+        Object.entries(fila || {}).forEach(([encabezado, valor]) => { valores[_normalizarEncabezadoImportacion(encabezado)] = String(valor ?? "").trim(); });
+        const registro = {};
+        CAMPOS_IMPORTACION_RECEPTORES.forEach((campo) => { registro[campo] = valores[campo] || ""; });
+        return registro;
+      }).filter((registro) => Object.values(registro).some(Boolean));
+      if (!registros.length) return alert("El archivo no contiene receptores fiscales.");
+      if (!confirm(`Se validarán e importarán ${registros.length} receptor(es) fiscales para EZA2007. Las claves existentes se actualizarán. ¿Continuar?`)) return;
+      const resultado = await apiJson("/timbrado/receptores-fiscales/importar", {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ empresa: "EZA2007", registros }),
+      });
+      alert(resultado?.mensaje || `Se importaron ${resultado?.total || registros.length} receptores fiscales.`);
+      await cargarReceptoresFiscales();
+    } catch (error) {
+      alert(`No se pudo importar el archivo: ${error.message || error}`);
+    }
+  };
+  input.click();
 }
 
 async function editarReceptorFiscal(clave) {

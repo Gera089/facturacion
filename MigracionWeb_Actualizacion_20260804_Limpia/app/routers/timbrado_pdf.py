@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import re
 import textwrap
@@ -440,6 +441,28 @@ def _cfdi_data(xml_root, db_row):
     tfd = xml_root.find(".//tfd:TimbreFiscalDigital", ns)
     empresa = _row_get(db_row, "empresa", _safe_get(emisor, "Nombre"))
     clave_receptor = _row_get(db_row, "cliente_receptor_numero", "")
+    try:
+        opciones_cfdi = json.loads(_row_get(db_row, "cfdi_opciones_json", "{}") or "{}")
+        if not isinstance(opciones_cfdi, dict):
+            opciones_cfdi = {}
+    except Exception:
+        opciones_cfdi = {}
+    # El historial de CFDI conserva la referencia de la factura; las opciones
+    # de emisión se guardan en su renglón de cola y de ahí se recuperan al
+    # reimprimir el PDF, incluso después de timbrar.
+    if not opciones_cfdi and _row_get(db_row, "factura_id", ""):
+        try:
+            from app.routers.timbrado_core import get_timbrado_connection
+            with get_timbrado_connection() as conn:
+                queue_row = conn.execute(
+                    "SELECT cfdi_opciones_json FROM timbrado_queue WHERE factura_id = ? ORDER BY id DESC LIMIT 1",
+                    (_row_get(db_row, "factura_id", ""),),
+                ).fetchone()
+                opciones_cfdi = json.loads(dict(queue_row or {}).get("cfdi_opciones_json") or "{}")
+                if not isinstance(opciones_cfdi, dict):
+                    opciones_cfdi = {}
+        except Exception:
+            opciones_cfdi = {}
     server = _load_server_rows(empresa, clave_receptor)
     erow = server["empresa"]
     rrow = server["receptor"]
@@ -486,6 +509,7 @@ def _cfdi_data(xml_root, db_row):
         "receptor_direccion": receptor_direccion,
         "enviar_a": (ship_name or consignee_name or _row_get(db_row, "cliente_receptor_nombre", "")) if city_fresko else (consignee_name or ship_name or _row_get(db_row, "cliente_receptor_nombre", "")),
         "direccion_envio": (ship_addr or consignee_addr or _address_line(rrow, _safe_get(receptor, "DomicilioFiscalReceptor"))) if city_fresko else (consignee_addr or ship_addr or _address_line(rrow, _safe_get(receptor, "DomicilioFiscalReceptor"))),
+        "orden_compra": str(_row_get(db_row, "orden_compra", "") or opciones_cfdi.get("orden_compra") or "").strip(),
         "serie": _safe_get(comp, "Serie"),
         "folio": _safe_get(comp, "Folio") or _row_get(db_row, "folio_cfdi", ""),
         "factura": _row_get(db_row, "factura", ""),
@@ -573,8 +597,10 @@ def _draw_header(c, data):
     _draw_label(c, "Enviar a:", data["enviar_a"] or "-", MARGIN_L, y, 58, 470, 6.4)
     y -= 12
     _draw_label(c, "Direccion envio:", data["direccion_envio"] or "-", MARGIN_L, y, 78, 450, 6.4)
+    y -= 12
+    _draw_label(c, "Orden de compra:", data.get("orden_compra") or "-", MARGIN_L, y, 82, 445, 6.4)
     _draw_label(c, "Vendedor :", "", 404, y + 12, 58, 110, 6.4)
-    c.line(MARGIN_L, 531, PAGE_W - MARGIN_R, 531)
+    c.line(MARGIN_L, 518, PAGE_W - MARGIN_R, 518)
 
 
 def _has_descuento(data):
@@ -584,7 +610,7 @@ def _has_descuento(data):
         return False
 
 
-def _draw_product_table_header(c, y=519, show_descuento=True):
+def _draw_product_table_header(c, y=506, show_descuento=True):
     x = MARGIN_L
     if show_descuento:
         col_w = [34, 40, 58, 43, 72, 180, 35, 35, 48]
@@ -813,14 +839,16 @@ def _draw_eza_header(c, data):
     c.setFont(FONT_B, 8.5)
     c.drawString(35, y, "Enviar a:")
     c.drawString(35, y - 13, "Direccion envio:")
+    c.drawString(35, y - 26, "Orden de compra:")
     c.setFont(FONT, 7.8)
     c.drawString(113, y - 13, _truncate_to_width(data["enviar_a"] or data["direccion_envio"] or "-", 300, FONT, 7.8))
+    c.drawString(113, y - 26, _truncate_to_width(data.get("orden_compra") or "-", 300, FONT, 7.8))
     c.setFont(FONT_B, 8.5)
     c.drawString(482, y, "Vendedor :")
 
 
-def _draw_eza_products_header(c, y=531, show_descuento=True):
-    x, y = 29, 531
+def _draw_eza_products_header(c, y=517, show_descuento=True):
+    x = 29
     c.line(x, y, 592, y)
     if show_descuento:
         headers = ["Cantidad", "Unidad", "Clave\nUnidad", "Clave", "Clave\nProd. Serv", "Descripcion", "% Desc", "P/U", "Importe"]

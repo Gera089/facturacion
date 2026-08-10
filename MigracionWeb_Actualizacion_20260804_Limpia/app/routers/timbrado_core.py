@@ -369,6 +369,19 @@ def _asegurar_historial_cfdi_emitidos(conn):
             conn.execute("ALTER TABLE cfdi_emitidos ADD INDEX idx_cfdi_factura_id (factura_id)")
         except Exception:
             pass
+        try:
+            columnas = {str(dict(row).get("Field") or "").lower() for row in conn.execute("SHOW COLUMNS FROM cfdi_emitidos").fetchall()}
+            if "orden_compra" not in columnas:
+                conn.execute("ALTER TABLE cfdi_emitidos ADD COLUMN orden_compra VARCHAR(100) DEFAULT ''")
+        except Exception:
+            pass
+    else:
+        try:
+            columnas = {str(dict(row).get("name") or "").lower() for row in conn.execute("PRAGMA table_info(cfdi_emitidos)").fetchall()}
+            if "orden_compra" not in columnas:
+                conn.execute("ALTER TABLE cfdi_emitidos ADD COLUMN orden_compra TEXT DEFAULT ''")
+        except Exception:
+            pass
 
 
 def _asegurar_tabla_cfdi_consolidacion_facturas(conn):
@@ -788,6 +801,7 @@ def _asegurar_tablas_timbrado(conn):
             xml_path TEXT DEFAULT '',
             pdf_path TEXT DEFAULT '',
             addenda_tipo TEXT DEFAULT '',
+            orden_compra TEXT DEFAULT '',
             fecha_timbrado TEXT,
             created_at TEXT DEFAULT (datetime('now','localtime'))
         )
@@ -1359,6 +1373,46 @@ def guardar_receptor_fiscal(conn, datos):
             now,
         )
     conn.execute(sql_insert, params)
+
+
+def importar_receptores_fiscales(conn, empresa, registros):
+    """Valida el lote completo antes de guardar, evitando importaciones parciales."""
+    _asegurar_tablas_timbrado(conn)
+    empresa = _normalizar_empresa(empresa)
+    if empresa != "EZA2007":
+        raise ValueError("La importación masiva de receptores está habilitada únicamente para EZA2007.")
+    if not isinstance(registros, list) or not registros:
+        raise ValueError("No se recibieron registros para importar.")
+    campos_requeridos = {
+        "clave_receptor": "Clave receptor",
+        "razon_social": "Razón social",
+        "rfc": "RFC",
+        "regimen_fiscal": "Régimen fiscal",
+        "cp_fiscal": "CP fiscal",
+        "uso_cfdi": "Uso CFDI",
+    }
+    preparados = []
+    errores = []
+    for indice, registro in enumerate(registros, start=2):
+        item = dict(registro or {})
+        item["empresa"] = empresa
+        faltantes = [etiqueta for campo, etiqueta in campos_requeridos.items() if not str(item.get(campo) or "").strip()]
+        if faltantes:
+            errores.append(f"Fila {indice}: falta " + ", ".join(faltantes) + ".")
+            continue
+        try:
+            dias = str(item.get("dias_credito") or "").strip()
+            if dias:
+                item["dias_credito"] = str(int(float(dias)))
+        except Exception:
+            errores.append(f"Fila {indice}: días de crédito debe ser un número entero.")
+            continue
+        preparados.append(item)
+    if errores:
+        raise ValueError("No se importó ningún registro. " + " ".join(errores[:12]))
+    for item in preparados:
+        guardar_receptor_fiscal(conn, item)
+    return len(preparados)
 
 
 def eliminar_receptor_fiscal(conn, empresa, clave_receptor):
@@ -3632,9 +3686,9 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
                 """
                 INSERT INTO cfdi_emitidos (
                     factura_id, factura, empresa, cliente_receptor_numero, cliente_receptor_nombre,
-                    serie, folio_cfdi, uuid, estatus_cfdi, xml_path, addenda_tipo, fecha_timbrado
+                    serie, folio_cfdi, uuid, estatus_cfdi, xml_path, addenda_tipo, orden_compra, fecha_timbrado
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TIMBRADA', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TIMBRADA', ?, ?, ?, ?)
                 """,
                 (
                     item["factura_id"],
@@ -3647,6 +3701,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
                     resultado_pac.uuid,
                     xml_path,
                     item.get("addenda_tipo"),
+                    str(opciones_cfdi.get("orden_compra") or "").strip(),
                     now,
                 ),
             )
@@ -3695,9 +3750,9 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
                 """
                 INSERT INTO cfdi_emitidos (
                     factura_id, factura, empresa, cliente_receptor_numero, cliente_receptor_nombre,
-                    serie, folio_cfdi, uuid, estatus_cfdi, xml_path, addenda_tipo, fecha_timbrado
+                    serie, folio_cfdi, uuid, estatus_cfdi, xml_path, addenda_tipo, orden_compra, fecha_timbrado
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TIMBRADA', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TIMBRADA', ?, ?, ?, ?)
                 """,
                 (
                     factura["id"],
@@ -3710,6 +3765,7 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
                     uuid_cfdi,
                     xml_path,
                     item.get("addenda_tipo"),
+                    str(opciones_cfdi.get("orden_compra") or "").strip(),
                     now,
                 ),
             )
@@ -3917,12 +3973,12 @@ def consolidar_facturas_timbrado(conn, conn_legacy, facturas_list):
             """
             INSERT INTO cfdi_emitidos (
                 factura_id, factura, empresa, cliente_receptor_numero, cliente_receptor_nombre,
-                serie, folio_cfdi, uuid, estatus_cfdi, xml_path, addenda_tipo, fecha_timbrado
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TIMBRADA', ?, ?, ?)
+                serie, folio_cfdi, uuid, estatus_cfdi, xml_path, addenda_tipo, orden_compra, fecha_timbrado
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TIMBRADA', ?, ?, ?, ?)
             """,
             (facturas[0]["id"], folio_nombre, empresa, items[0].get("cliente_receptor_numero"),
              items[0].get("cliente_receptor_nombre"), serie, cfdi_folio, uuid_cfdi, xml_path,
-             items[0].get("addenda_tipo"), now),
+             items[0].get("addenda_tipo"), str(opciones_cfdi.get("orden_compra") or "").strip(), now),
         )
         cfdi_emitido_id = getattr(cursor_cfdi, "lastrowid", None)
         if not cfdi_emitido_id:

@@ -67,6 +67,7 @@ from app.routers.timbrado_core import (
     guardar_productos_fiscales_lote,
     guardar_regla_redireccion,
     guardar_receptor_fiscal,
+    importar_receptores_fiscales,
     importar_catalogo_sat_prodserv,
     importar_catalogo_sat_unidades,
     listar_addendas_clientes_configuradas,
@@ -743,6 +744,7 @@ def _normalizar_opciones_cfdi(datos: dict | None) -> dict:
         "metodo_pago": str(datos.get("metodo_pago") or "").strip().upper()[:5],
         "exportacion": str(datos.get("exportacion") or "").strip()[:5],
         "condiciones_pago": str(datos.get("condiciones_pago") or "").strip()[:160],
+        "orden_compra": str(datos.get("orden_compra") or "").strip()[:100],
         "moneda": (str(datos.get("moneda") or "MXN").strip().upper() or "MXN")[:5],
         "usar_fecha_actual": bool(datos.get("usar_fecha_actual", False)),
     }
@@ -2268,6 +2270,16 @@ def actualizar_receptor_fiscal(datos: dict):
     with get_timbrado_connection() as conn:
         guardar_receptor_fiscal(conn, datos or {})
     return {"mensaje": "Receptor fiscal guardado correctamente."}
+
+
+@router.post("/receptores-fiscales/importar")
+def importar_receptores_fiscales_archivo(datos: dict):
+    empresa = _normalizar_empresa((datos or {}).get("empresa"))
+    if empresa != "EZA2007":
+        raise HTTPException(status_code=400, detail="La importación masiva de receptores está habilitada únicamente para EZA2007.")
+    with get_timbrado_connection() as conn:
+        total = importar_receptores_fiscales(conn, empresa, (datos or {}).get("registros") or [])
+    return {"mensaje": f"{total} receptor(es) fiscal(es) importado(s) para EZA2007.", "total": total}
 
 
 @router.delete("/receptores-fiscales/{empresa}/{clave_receptor}")
