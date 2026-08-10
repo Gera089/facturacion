@@ -3221,7 +3221,8 @@ def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio
     emisor_nombre = xml_escape(str(emisor.get("razon_social") or config.get("razon_social") or "").strip())
     emisor_regimen = xml_escape(str(emisor.get("regimen_fiscal") or config.get("regimen_fiscal") or "601").strip())
     opciones_cfdi = _opciones_cfdi_desde_item(item)
-    if _es_venta_mostrador(factura, receptor):
+    es_factura_global = _es_venta_mostrador(factura, receptor)
+    if es_factura_global:
         receptor = {**receptor, **_receptor_publico_general(config)}
         opciones_cfdi = {**opciones_cfdi, "uso_cfdi": "S01"}
 
@@ -3282,6 +3283,13 @@ def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio
         '>'
     )
 
+    if es_factura_global:
+        # CFDI 4.0 exige InformacionGlobal cuando se usa el RFC genérico con
+        # el nombre PUBLICO EN GENERAL. Cada venta de mostrador se integra a
+        # la factura global mensual del mes de emisión.
+        xml_parts.append(
+            f'  <cfdi:InformacionGlobal Periodicidad="04" Meses="{fecha.strftime("%m")}" Año="{fecha.strftime("%Y")}"/>'
+        )
     xml_parts.append(f'  <cfdi:Emisor Rfc="{emisor_rfc}" Nombre="{emisor_nombre}" RegimenFiscal="{emisor_regimen}"/>')
     xml_parts.append(f'  <cfdi:Receptor Rfc="{receptor_rfc}" Nombre="{receptor_nombre}" DomicilioFiscalReceptor="{cp_receptor}" RegimenFiscalReceptor="{receptor_regimen}" UsoCFDI="{uso_cfdi}"/>')
 
