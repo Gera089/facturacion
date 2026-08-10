@@ -1992,6 +1992,30 @@ def ver_opciones_cfdi_folio(folio: str):
                 "condiciones_pago": guardado.get("condiciones_pago") or condiciones_default,
                 "moneda": guardado.get("moneda") or "MXN",
             }
+            # El CFDI se construye con el receptor resuelto (incluye la ficha
+            # configurada en Receptores Fiscales), no con el nombre que venga
+            # solamente en la comanda. Exponemos el resumen al modal para que
+            # el usuario pueda revisar la fuente antes de emitir.
+            receptor_fiscal = dict(resolucion.get("receptor_fiscal") or {})
+            datos_receptor = {
+                "clave": str(receptor.get("numero") or numero_cliente or "").strip(),
+                "nombre": str(receptor.get("razon_social") or receptor.get("nombre") or nombre_cliente or "").strip(),
+                "rfc": str(receptor.get("rfc") or "").strip().upper(),
+                "cp_fiscal": str(receptor.get("codigo_postal") or "").strip(),
+                "regimen_fiscal": str(receptor.get("regimen_fiscal") or "").strip(),
+                "uso_cfdi": str(opciones.get("uso_cfdi") or receptor.get("uso_cfdi") or "").strip().upper(),
+                "configurado": bool(receptor_fiscal),
+            }
+            faltantes_receptor = []
+            for campo, etiqueta in (
+                ("rfc", "RFC"),
+                ("nombre", "razón social"),
+                ("cp_fiscal", "CP fiscal"),
+                ("regimen_fiscal", "régimen fiscal"),
+                ("uso_cfdi", "uso de CFDI"),
+            ):
+                if not datos_receptor[campo]:
+                    faltantes_receptor.append(etiqueta)
             return {
                 "factura": factura.get("factura"),
                 "empresa": empresa,
@@ -2000,6 +2024,8 @@ def ver_opciones_cfdi_folio(folio: str):
                 "tiene_guardado": bool(guardado),
                 "opciones": opciones,
                 "modo_facturacion": resolucion.get("modo_facturacion"),
+                "receptor_fiscal": datos_receptor,
+                "faltantes_receptor": faltantes_receptor,
             }
         finally:
             if close_legacy:

@@ -3955,6 +3955,8 @@ function pedirDatosFiscalesEmision(folio) {
       <div class="sat-cancel-dialog fiscal-emit-dialog">
         <h3>Datos fiscales para emitir ${escHtml(folio)}</h3>
         <p id="fiscal-emit-client" class="fiscal-emit-client">Cargando datos del cliente...</p>
+        <div id="fiscal-emit-receptor" class="fiscal-emit-client" style="margin-top:-4px;line-height:1.45"></div>
+        <div id="fiscal-emit-receptor-missing" class="sat-cancel-error hidden" style="grid-column:1/-1"></div>
         <label class="sat-cancel-field">
           <span>Uso de CFDI</span>
           <select id="fiscal-emit-uso">${_cfdiSelectOptions(CFDI_USOS_EMISION, "G01")}</select>
@@ -4072,8 +4074,40 @@ function pedirDatosFiscalesEmision(folio) {
       if (!modal.isConnected) return;
       const defaults = defaultsData.opciones || {};
       const cliente = modal.querySelector("#fiscal-emit-client");
+      const receptorBox = modal.querySelector("#fiscal-emit-receptor");
+      const faltantesBox = modal.querySelector("#fiscal-emit-receptor-missing");
+      const emitirBtn = modal.querySelector('[data-action="emitir"]');
+      const receptor = defaultsData.receptor_fiscal || {};
       if (cliente) {
-        cliente.textContent = `${defaultsData.nombre_cliente || "Cliente"}${defaultsData.tiene_guardado ? " - datos guardados del cliente" : ""}`;
+        cliente.textContent = receptor.configurado
+          ? "Datos tomados del receptor fiscal configurado."
+          : "Datos tomados del cliente legado; aún no hay ficha de receptor fiscal configurada.";
+      }
+      if (receptorBox) {
+        const etiqueta = receptor.nombre || defaultsData.nombre_cliente || "Receptor sin nombre";
+        const datos = [
+          receptor.rfc ? `RFC: ${receptor.rfc}` : "RFC: pendiente",
+          receptor.cp_fiscal ? `CP: ${receptor.cp_fiscal}` : "CP: pendiente",
+          receptor.regimen_fiscal ? `Régimen: ${receptor.regimen_fiscal}` : "Régimen: pendiente",
+        ];
+        receptorBox.textContent = `${etiqueta} · ${datos.join(" · ")}`;
+      }
+      const faltantesReceptor = Array.isArray(defaultsData.faltantes_receptor) ? defaultsData.faltantes_receptor : [];
+      if (faltantesReceptor.length) {
+        if (faltantesBox) {
+          faltantesBox.textContent = `Faltan datos del receptor: ${faltantesReceptor.join(", ")}. Corrígelos en Timbrado > Receptores Fiscales antes de emitir.`;
+          faltantesBox.classList.remove("hidden");
+        }
+        if (emitirBtn) {
+          emitirBtn.disabled = true;
+          emitirBtn.title = "Completa los datos fiscales faltantes del receptor.";
+        }
+      } else if (faltantesBox) {
+        faltantesBox.classList.add("hidden");
+        if (emitirBtn) {
+          emitirBtn.disabled = false;
+          emitirBtn.title = "";
+        }
       }
       const uso = modal.querySelector("#fiscal-emit-uso");
       const forma = modal.querySelector("#fiscal-emit-forma");
