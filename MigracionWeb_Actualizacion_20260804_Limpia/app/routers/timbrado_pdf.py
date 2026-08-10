@@ -587,7 +587,12 @@ def _draw_header(c, data):
         value_w = right_x + right_w - value_x - 9
         c.setFont(FONT_B, 8.0)
         c.drawString(right_x + 8, y, label)
-        lines = _wrap_to_width(value, value_w, FONT, 8.0)[:2]
+        # "Uso CFDI" se conserva en una sola línea: la descripción larga
+        # no debe desplazar los campos siguientes ni salirse del recuadro.
+        if label == "Uso CFDI:":
+            lines = [_truncate_to_width(value, value_w, FONT, 8.0)]
+        else:
+            lines = _wrap_to_width(value, value_w, FONT, 8.0)[:2]
         c.setFont(FONT, 8.0)
         for idx, line in enumerate(lines or [""]):
             c.drawString(value_x, y - (idx * 9), line)
@@ -679,15 +684,16 @@ def _draw_product_table(c, data):
     return y
 
 
-def _draw_totals(c, data, draw_legend=True):
+def _draw_totals(c, data, draw_legend=True, qr_y=300, qr_size=95, totals_y=262, draw_words=True):
     qr_data = (
         "https://verificacfdi.facturaelectronica.sat.gob.mx/default.aspx"
         f"?id={data['uuid']}&re={data['emisor_rfc']}&rr={data['receptor_rfc']}&tt={data['total']}"
     )
-    _draw_qr(c, MARGIN_L, 300, 95, qr_data)
+    _draw_qr(c, MARGIN_L, qr_y, qr_size, qr_data)
 
-    c.setFont(FONT, 7)
-    c.drawString(MARGIN_L, 262, _numero_a_letras(data["total"]))
+    if draw_words:
+        c.setFont(FONT, 7)
+        c.drawString(MARGIN_L, qr_y - 18, _numero_a_letras(data["total"]))
     c.setFont(FONT_B, 7)
     has_descuento = float(data.get("descuento") or 0) > 0
     has_iva = float(data.get("iva") or 0) > 0
@@ -697,7 +703,7 @@ def _draw_totals(c, data, draw_legend=True):
     if has_iva:
         labels.append(("I.V.A.", data["iva"]))
     labels.append(("Total", data["total"]))
-    y = 262
+    y = totals_y
     for label, value in labels:
         c.drawRightString(480, y, label)
         c.drawRightString(585, y, f"${_fmt_money(value)}" if label == "Total" else _fmt_money(value))
@@ -904,18 +910,18 @@ def _draw_eza_products(c, data):
     return row_y
 
 
-def _draw_eza_totals_and_timbre(c, data):
+def _draw_eza_totals_and_timbre(c, data, qr_y=367, qr_size=93, totals_y=471, draw_words=True):
     qr_data = (
         "https://verificacfdi.facturaelectronica.sat.gob.mx/default.aspx"
         f"?id={data['uuid']}&re={data['emisor_rfc']}&rr={data['receptor_rfc']}&tt={data['total']}"
     )
-    _draw_qr(c, 35, 367, 93, qr_data)
+    _draw_qr(c, 35, qr_y, qr_size, qr_data)
     c.setFont(FONT, 8)
-    c.drawString(388, 471, "Subtotal")
-    c.drawRightString(584, 471, _fmt_money(data["subtotal"]))
+    c.drawString(388, totals_y, "Subtotal")
+    c.drawRightString(584, totals_y, _fmt_money(data["subtotal"]))
     has_descuento = float(data.get("descuento") or 0) > 0
     has_iva = float(data.get("iva") or 0) > 0
-    y = 457
+    y = totals_y - 14
     if has_descuento:
         c.drawString(388, y, "Descuento")
         c.drawRightString(584, y, _fmt_money(data["descuento"]))
@@ -929,9 +935,10 @@ def _draw_eza_totals_and_timbre(c, data):
     c.setFont(FONT_B, 8.5)
     c.drawString(388, y, "Total")
     c.drawRightString(584, y, _fmt_money(data["total"]))
-    c.line(343, 376, 584, 376)
+    c.line(343, y - 6, 584, y - 6)
     c.setFont(FONT_B, 8)
-    c.drawCentredString(452, 339, _numero_a_letras(data["total"]))
+    if draw_words and y - 34 >= 313:
+        c.drawCentredString(452, y - 34, _numero_a_letras(data["total"]))
 
     box_x, box_y, box_w, box_h = 31, 86, 560, 219
     c.rect(box_x, box_y, box_w, box_h, stroke=1, fill=0)
@@ -974,10 +981,19 @@ def _generar_eza_pdf(data):
     table_y = _draw_eza_products(c, data)
     # El QR ocupa de y=367 a y=460. Si la tabla llega a esa zona, los datos
     # fiscales se colocan en una página adicional para no encimarse.
-    if table_y < 472:
+    # Se reduce y desplaza el QR dentro del espacio libre disponible.
+    footer_top = table_y - 8
+    qr_floor = 313  # el bloque de timbre llega hasta y=305
+    qr_size = min(93, footer_top - qr_floor)
+    if qr_size < 60:
         c.showPage()
         _draw_eza_header(c, data)
-    _draw_eza_totals_and_timbre(c, data)
+        _draw_eza_totals_and_timbre(c, data)
+    else:
+        _draw_eza_totals_and_timbre(
+            c, data, qr_y=qr_floor, qr_size=qr_size,
+            totals_y=footer_top - 6, draw_words=False,
+        )
     c.save()
     buf.seek(0)
     return buf
@@ -995,8 +1011,15 @@ def generar_cfdi_pdf(xml_root, db_row=None, logo_archivo=""):
     _draw_header(c, data)
     table_y = _draw_product_table(c, data)
     # El QR ocupa de y=300 a y=395; se requiere margen sobre esa área.
-    if table_y >= 407:
-        _draw_totals(c, data, draw_legend=False)
+    # Si el QR cabe compacto bajo la tabla, se conserva una sola página.
+    footer_top = table_y - 8
+    qr_floor = 210  # el timbre compacto inicia en y=198
+    qr_size = min(95, footer_top - qr_floor)
+    if qr_size >= 58:
+        _draw_totals(
+            c, data, draw_legend=False, qr_y=qr_floor, qr_size=qr_size,
+            totals_y=footer_top - 8, draw_words=False,
+        )
         _draw_timbre_block(c, data, box_top=198, box_h=166, compact=True)
     else:
         c.showPage()
