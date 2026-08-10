@@ -3290,7 +3290,7 @@ def _guardar_folio_sae_legacy(conn_legacy, factura_ids, serie, folio):
     return folio_sae
 
 
-def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio, serie):
+def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio, serie, receptor_resuelto=None):
     preview = addenda_render.get("preview") or {}
     modo = str(item.get("modo_facturacion") or preview.get("modo_facturacion") or "PIEZAS").strip()
     folio = cfdi_folio
@@ -3305,7 +3305,10 @@ def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio
     lugar_exp = str(config.get("cp_fiscal") or config.get("lugar_expedicion") or "03810").strip()
 
     emisor = preview.get("emisor") or {}
-    receptor = preview.get("receptor") or {}
+    # El receptor fiscal resuelto es la fuente obligatoria del CFDI. La vista
+    # previa de addenda puede contener datos heredados de emisor/consignatario;
+    # nunca debe reemplazar RFC, CP o régimen del receptor fiscal.
+    receptor = dict(receptor_resuelto or preview.get("receptor") or {})
     emisor_rfc = xml_escape(str(emisor.get("rfc") or config.get("rfc_emisor") or "").strip())
     emisor_nombre = xml_escape(str(emisor.get("razon_social") or config.get("razon_social") or "").strip())
     emisor_regimen = xml_escape(str(emisor.get("regimen_fiscal") or config.get("regimen_fiscal") or "601").strip())
@@ -3649,7 +3652,10 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
         cfdi_folio = _obtener_siguiente_folio(conn, item["empresa"])
         factura["folio_cfdi"] = cfdi_folio
         factura["fecha_cfdi"] = fecha_cfdi
-        contenido = _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio, serie)
+        contenido = _generar_cfdi_simulado_xml(
+            factura, config, addenda_render, item, cfdi_folio, serie,
+            receptor_resuelto=resolucion_validacion.get("cliente_receptor"),
+        )
         if proveedor != "SIMULADO":
             # Detectar si la addenda es EDIFACT (como Walmart) o XML (como City Market)
             addenda_es_edifact = False
@@ -3662,7 +3668,10 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
             # Para addendas EDIFACT, generar XML sin addenda para timbrado
             if addenda_es_edifact:
                 addenda_vacia = {"tiene_addenda": False, "xml_renderizado": "", "preview": addenda_render.get("preview", {})}
-                contenido = _generar_cfdi_simulado_xml(factura, config, addenda_vacia, item, cfdi_folio, serie)
+                contenido = _generar_cfdi_simulado_xml(
+                    factura, config, addenda_vacia, item, cfdi_folio, serie,
+                    receptor_resuelto=resolucion_validacion.get("cliente_receptor"),
+                )
             
             sellado = sellar_xml_cfdi(contenido, config)
             contenido_pac = sellado.get("xml") if sellado.get("ok") else contenido
@@ -3979,7 +3988,10 @@ def consolidar_facturas_timbrado(conn, conn_legacy, facturas_list):
         merged["fecha_cfdi"] = fecha_cfdi
         item_cfdi = dict(items[0])
         item_cfdi["cfdi_opciones_json"] = json.dumps(opciones_cfdi, ensure_ascii=False)
-        contenido = _generar_cfdi_simulado_xml(merged, config, addenda_render, item_cfdi, cfdi_folio, serie)
+        contenido = _generar_cfdi_simulado_xml(
+            merged, config, addenda_render, item_cfdi, cfdi_folio, serie,
+            receptor_resuelto=resolucion.get("cliente_receptor"),
+        )
         output_dir = str(config.get("output_dir") or ruta_empresa_fiscal(empresa))
         anio = str(merged["fecha_cfdi"].year)
         xml_dir = os.path.join(output_dir, anio, "xml")

@@ -2095,7 +2095,10 @@ def generar_prexml_cfdi_folio(folio: str, datos: dict | None = None):
                 "cfdi_opciones_json": json.dumps(opciones_cfdi, ensure_ascii=False),
             }
             serie = str(config.get("serie_cfdi") or "").strip() or "CFDI"
-            xml = _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio, serie)
+            xml = _generar_cfdi_simulado_xml(
+                factura, config, addenda_render, item, cfdi_folio, serie,
+                receptor_resuelto=resolucion.get("cliente_receptor"),
+            )
             headers = {
                 "X-CFDI-Validacion": "ok" if validacion.get("ok") else "faltantes",
                 "X-CFDI-Faltantes": str(len(validacion.get("faltantes") or [])),
@@ -3088,7 +3091,10 @@ def previsualizar_folio_cola_controlado(folio: str, datos: dict | None = None):
                 "cliente_receptor_nombre": resolucion.get("cliente_receptor_nombre"),
                 "cfdi_opciones_json": json.dumps(opciones_cfdi, ensure_ascii=False),
             }
-            xml = _generar_cfdi_simulado_xml(factura, config, addenda_render, item, folio_candidato, serie)
+            xml = _generar_cfdi_simulado_xml(
+                factura, config, addenda_render, item, folio_candidato, serie,
+                receptor_resuelto=resolucion.get("cliente_receptor"),
+            )
             sellado = sellar_xml_cfdi(xml, config)
             xml_pac = sellado.get("xml") if sellado.get("ok") else xml
             paquete = preparar_paquete_pac(proveedor, config, xml_pac) if proveedor and proveedor != "SIMULADO" else {
