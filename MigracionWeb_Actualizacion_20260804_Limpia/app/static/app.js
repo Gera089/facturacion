@@ -256,6 +256,7 @@ const moduleViews = {
   collections: document.getElementById("view-collections"),
   cadenas: document.getElementById("view-cadenas"),
   reports: document.getElementById("view-reports"),
+  promotoria: document.getElementById("view-promotoria"),
   support: document.getElementById("view-support"),
   migrations: document.getElementById("view-migrations"),
   conciliacion: document.getElementById("view-conciliacion"),
@@ -431,6 +432,10 @@ const moduleMeta = {
   mio: {
     title: "MIO",
     copy: "Historial, filtros, totales y acciones sobre facturas emitidas.",
+  },
+  promotoria: {
+    title: "Administración promotoría",
+    copy: "Estructura comercial, tiendas, asociaciones y avance anual de sell-out.",
   },
   comandas: {
     title: "Comandas",
@@ -674,7 +679,7 @@ function isAdminProfile() {
 }
 
 function isAdminOnlyModule(moduleName) {
-  return ["support", "crm-configuracion", "migrations", "conciliacion"].includes(moduleName);
+  return ["support", "crm-configuracion", "migrations", "conciliacion", "promotoria"].includes(moduleName);
 }
 
 const USER_SECTION_OPTIONS = [
@@ -685,6 +690,7 @@ const USER_SECTION_OPTIONS = [
   ["customers", "Clientes"],
   ["products", "Productos"],
   ["reports", "Reportes"],
+  ["promotoria", "Administración promotoría"],
   ["crm-clientes", "CRM · Clientes"],
   ["crm-seguimientos", "CRM · Seguimientos"],
   ["crm-prospector", "CRM · Prospector"],
@@ -2128,9 +2134,26 @@ async function iniciarModuloComandas() {
     };
     document.getElementById("cmd-guardar").onclick = async () => {
       try {
-        const payload = { folio: document.getElementById("cmd-folio").value, vendedor: document.getElementById("cmd-vendedor").value, empresa: document.getElementById("cmd-empresa").value, cliente_numero: document.getElementById("cmd-cliente-numero").value, cliente_nombre: document.getElementById("cmd-cliente-nombre").value, observaciones_pedido: document.getElementById("cmd-observaciones").value, productos: cmdPartidas() };
+        const partidasCapturadas = cmdPartidas();
+        const hayProductoReal = partidasCapturadas.some((partida) => (
+          String(partida.cip || "").trim()
+          && String(partida.descripcion || "").trim()
+          && (Number(partida.kgs) > 0 || Number(partida.piezas) > 0)
+        ));
+        if (!hayProductoReal) throw new Error("Agrega al menos un producto con kilos o piezas.");
+        const productos = partidasCapturadas.filter((partida) => (
+          (String(partida.cip || "").trim()
+            && String(partida.descripcion || "").trim()
+            && (Number(partida.kgs) > 0 || Number(partida.piezas) > 0))
+          || String(partida.observaciones || "").trim()
+        ));
+        const payload = { folio: document.getElementById("cmd-folio").value, vendedor: document.getElementById("cmd-vendedor").value, empresa: document.getElementById("cmd-empresa").value, cliente_numero: document.getElementById("cmd-cliente-numero").value, cliente_nombre: document.getElementById("cmd-cliente-nombre").value, observaciones_pedido: document.getElementById("cmd-observaciones").value, productos };
         const res = await apiJson("/api/comandas/guardar", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(payload) });
-        await cargarCmdDiario(); await nuevaComanda(); cmdMensaje(`Comanda ${res.folio} guardada con ${res.productos} partidas.`, true);
+        const confirmacion = `Comanda ${res.folio} guardada correctamente con ${res.productos} partida(s).`;
+        await cargarCmdDiario();
+        cmdMensaje(confirmacion, true);
+        window.alert(confirmacion);
+        await nuevaComanda();
       } catch (e) { cmdMensaje(e.message || "No se pudo guardar."); }
     };
     document.querySelectorAll("#cmd-tabs [data-cmd-tab]").forEach((btn) => btn.onclick = () => abrirCmdPestana(btn.dataset.cmdTab));
@@ -2519,6 +2542,9 @@ function showModuleView(moduleName) {
       else if (report === "gerencial") loadIndicadoresGerenciales();
       else if (report === "cadenas") loadReportesCadenas();
     }
+  } else if (moduleName === "promotoria") {
+    moduleViews.promotoria.classList.remove("hidden");
+    cargarPromotoria().catch((error) => alert(error.message || error));
   } else if (moduleName === "support") {
     moduleViews.support.classList.remove("hidden");
     if (!window._supportInitialized) {
@@ -2537,6 +2563,667 @@ function showModuleView(moduleName) {
   } else {
     moduleViews.placeholder.classList.remove("hidden");
   }
+}
+
+let promotoriaAdminData = null;
+let promotoriaSummaryData = null;
+let promotoriaPendientesData = null;
+let promotoriaDiagnosticoData = null;
+let promotoriaComisionesData = null;
+let promotoriaTab = "objetivos";
+let promotoriaEditor = null;
+let promotoriaCommissionMonth = new Date().getMonth() + 1;
+const promotoriaPendienteSeleccion = new Map();
+const promotoriaObjectiveFilters = { cadena: null, supervisor: null, status: null, promotor: null };
+
+function promotoriaEscape(value) { return escapeCell(String(value ?? "")); }
+function promotoriaMoney(value) { return "$" + formatInvoiceNumber(Number(value || 0)); }
+function promotoriaMediaPeriodo(row) { return row?.media_periodo ?? row?.media ?? 0; }
+
+function initPromotoriaYear() {
+  const select = document.getElementById("promotoria-year");
+  const now = new Date().getFullYear();
+  if (select && !select.options.length) {
+    for (let year = now; year >= 2024; year -= 1) {
+      select.appendChild(new Option(String(year), String(year), year === now, year === now));
+    }
+    select.addEventListener("change", () => cargarPromotoria().catch((e) => alert(e.message || e)));
+  }
+  document.getElementById("promotoria-refresh")?.addEventListener("click", () => cargarPromotoria().catch((e) => alert(e.message || e)));
+  document.querySelectorAll("[data-promotoria-tab]").forEach((button) => button.addEventListener("click", () => {
+    promotoriaTab = button.dataset.promotoriaTab || "promotores";
+    document.querySelectorAll("[data-promotoria-tab]").forEach((item) => item.classList.toggle("is-active", item === button));
+    renderPromotoria();
+  }));
+}
+
+function enlazarImportacionesPromotoria(root = document) {
+  root.querySelector("#promotoria-import-base")?.addEventListener("click", () => importarArchivoPromotoria("/api/promotoria/importar-base", ".xlsx", "Estructura de promotoría"));
+  root.querySelector("#promotoria-import-sellout")?.addEventListener("click", () => importarArchivoPromotoria("/api/promotoria/sellout/importar", ".xlsx,.xls", "Sell-out"));
+  root.querySelector("#promotoria-export-links")?.addEventListener("click", () => descargarVinculosPromotoria().catch((e) => alert(e.message || e)));
+  root.querySelector("#promotoria-import-links")?.addEventListener("click", () => importarVinculosPromotoria());
+}
+
+async function cargarPromotoria() {
+  initPromotoriaYear();
+  const year = document.getElementById("promotoria-year")?.value || new Date().getFullYear();
+  const [admin, summary, pendientes, diagnostico, comisiones] = await Promise.all([
+    apiJson("/api/promotoria/admin", { headers: authHeaders() }),
+    apiJson(`/api/promotoria/resumen?year=${encodeURIComponent(year)}`, { headers: authHeaders() }),
+    apiJson(`/api/promotoria/sellout/sin-asignar?year=${encodeURIComponent(year)}`, { headers: authHeaders() }),
+    apiJson("/api/promotoria/diagnostico", { headers: authHeaders() }),
+    apiJson("/api/promotoria/comisiones/porcentajes", { headers: authHeaders() }),
+  ]);
+  promotoriaAdminData = admin || {};
+  promotoriaSummaryData = summary || {};
+  promotoriaPendientesData = pendientes || {};
+  promotoriaDiagnosticoData = diagnostico || {};
+  promotoriaComisionesData = comisiones || {};
+  renderPromotoria();
+}
+
+function renderPromotoria() {
+  const summaryBox = document.getElementById("promotoria-summary");
+  const content = document.getElementById("promotoria-content");
+  if (!summaryBox || !content || !promotoriaAdminData) return;
+  document.querySelectorAll("[data-promotoria-tab]").forEach((button) => button.classList.toggle("is-active", button.dataset.promotoriaTab === promotoriaTab));
+  const adminSummary = promotoriaAdminData.summary || {};
+  const analysis = promotoriaSummaryData?.summary || {};
+  const usaFiltrosObjetivo = ["objetivos", "comisiones"].includes(promotoriaTab);
+  summaryBox.classList.toggle("promotoria-filter-summary", usaFiltrosObjetivo);
+  if (usaFiltrosObjetivo) {
+    const objectiveRows = promotoriaSummaryData?.rows || [];
+    summaryBox.innerHTML = renderFiltrosObjetivosPromotoria(objectiveRows);
+    activarFiltrosObjetivosPromotoria(summaryBox, objectiveRows);
+  } else {
+    const cards = [
+      ["Promotores activos", adminSummary.activos || 0], ["Tiendas asignadas", adminSummary.tiendas || 0],
+      ["Sin vínculo de cliente", analysis.sin_vinculo || adminSummary.tiendas_sin_cliente || 0], ["Sell-out anual", promotoriaMoney(analysis.ventas || adminSummary.sellout_total || 0)],
+    ];
+    summaryBox.innerHTML = cards.map(([label, value]) => `<div class="stat"><span>${promotoriaEscape(label)}</span><strong>${promotoriaEscape(value)}</strong></div>`).join("");
+  }
+  const promotores = (promotoriaAdminData.promotores || []).filter((row) => Number(row.activo)).map((row) => row.nombre).filter(Boolean);
+  const tiendas = promotoriaAdminData.tiendas || [];
+  if (promotoriaTab === "administracion") {
+    const promotorOptions = promotoriaSelectOptions(promotores, "SIN SERVICIO");
+    const tiendaOptions = tiendas.map((row) => `<option value="${Number(row.id)}">${promotoriaEscape(row.cadena)} - ${promotoriaEscape(row.tienda)}</option>`).join("");
+    const clienteOptions = (promotoriaAdminData.clientes || []).map((row) => `<option value="${promotoriaEscape(`${row.empresa || ""}|${row.numero || ""}`)}">${promotoriaEscape(row.empresa)} - ${promotoriaEscape(row.numero)} - ${promotoriaEscape(row.nombre)}</option>`).join("");
+    content.innerHTML = `<div class="promotoria-assignment-card"><div class="promotoria-assignment-title"><span class="section-kicker">Asignar promotor a tienda</span><b>Administración de estructura</b><small id="promotoria-asignar-detalle"></small></div><div class="promotoria-assignment-form"><label>Registro de promotoría<select id="promotoria-asignar-tienda">${tiendaOptions}</select></label><label>Cliente de base de datos<select id="promotoria-asignar-cliente"><option value="">Sin vínculo de cliente</option>${clienteOptions}</select></label><label>Promotor<select id="promotoria-asignar-promotor">${promotorOptions}</select></label><button type="button" class="primary-button" id="promotoria-guardar-asignacion">Guardar asociación</button></div></div><div class="promotoria-table-title">Estructura cargada</div><div class="table-wrap promotoria-admin-table"><table><thead><tr><th>Cadena</th><th>Tipo</th><th>Activo</th><th>Supervisor</th><th>Estado</th><th>Promotor</th><th>Tienda personalizada</th><th>Cliente vinculado</th><th></th></tr></thead><tbody>${tiendas.map((row) => `<tr><td>${promotoriaEscape(row.cadena)}</td><td>${promotoriaEscape(row.status)}</td><td>${promotoriaEscape(row.activa)}</td><td>${promotoriaEscape(row.supervisor)}</td><td>${promotoriaEscape(row.estado)}</td><td>${promotoriaEscape(row.promotor)}</td><td>${promotoriaEscape(row.tienda)}</td><td>${promotoriaEscape(row.cliente_numero)} ${promotoriaEscape(row.cliente_nombre)}</td><td><button type="button" class="timbrado-mini-btn" data-promotoria-asignacion="${Number(row.id)}">Cambiar</button></td></tr>`).join("") || '<tr><td colspan="9">Importa la base de estructura para cargar tiendas y promotores.</td></tr>'}</tbody></table></div>`;
+    content.querySelector("#promotoria-asignar-tienda")?.addEventListener("change", actualizarSeleccionAsignacionPromotoria);
+    content.querySelector("#promotoria-asignar-cliente")?.addEventListener("change", actualizarSeleccionAsignacionPromotoria);
+    content.querySelector("#promotoria-guardar-asignacion")?.addEventListener("click", () => guardarAsignacionComboPromotoria().catch((e) => alert(e.message || e)));
+    content.querySelectorAll("[data-promotoria-asignacion]").forEach((button) => button.addEventListener("click", () => seleccionarAsignacionPromotoria(button.dataset.promotoriaAsignacion)));
+    actualizarSeleccionAsignacionPromotoria();
+    return;
+  }
+  if (promotoriaTab === "catalogos") {
+    const supervisorNames = promotoriaAdminData.supervisores || [];
+    const editor = promotoriaEditor || {};
+    const isPromotor = editor.tipo !== "supervisor";
+    const form = promotoriaEditor ? `<div class="promotoria-editor"><h4>${editor.id ? "Editar" : "Alta de"} ${isPromotor ? "promotor" : "supervisor"}</h4><div class="promotoria-editor-fields"><label>Nombre<input id="promotoria-editor-nombre" value="${promotoriaEscape(editor.nombre || "")}" autocomplete="off"></label>${isPromotor ? `<label>Supervisor<select id="promotoria-editor-supervisor">${promotoriaSelectOptions(supervisorNames).replace(`value="${promotoriaEscape(editor.supervisor || "")}"`, `value="${promotoriaEscape(editor.supervisor || "")}" selected`)}</select></label><label>Cuota objetivo<input id="promotoria-editor-cuota" type="number" min="0" step="0.01" value="${Number(editor.cuota_objetivo || 0)}"></label><label>% objetivo<input id="promotoria-editor-porcentaje" type="number" min="0" step="0.01" value="${Number(editor.porcentaje_objetivo || .1) * 100}"></label>` : ""}<label class="promotoria-check"><input id="promotoria-editor-activo" type="checkbox" ${editor.activo === false || Number(editor.activo) === 0 ? "" : "checked"}> Activo</label><button type="button" class="primary-button" onclick="guardarEditorPromotoria()">Guardar</button><button type="button" class="secondary-button" onclick="cancelarEditorPromotoria()">Cancelar</button></div></div>` : "";
+    const supervisors = promotoriaAdminData.supervisores_catalogo || [];
+    content.innerHTML = `${form}<div class="promotoria-catalog-grid"><section><div class="promotoria-catalog-head"><div><p class="section-kicker">Catálogo</p><h4>Promotores</h4></div><button class="mio-action mio-blue" type="button" onclick="nuevoPromotorPromotoria()">Nuevo promotor</button></div><div class="table-wrap promotoria-catalog-table"><table><thead><tr><th>Nombre</th><th>Supervisor</th><th>Cuota</th><th>%</th><th>Estado</th><th></th></tr></thead><tbody>${(promotoriaAdminData.promotores || []).map((row) => `<tr><td>${promotoriaEscape(row.nombre)}</td><td>${promotoriaEscape(row.supervisor)}</td><td>${promotoriaMoney(row.cuota_objetivo)}</td><td>${(Number(row.porcentaje_objetivo || 0) * 100).toFixed(2)}%</td><td>${Number(row.activo) ? "Activo" : "Baja"}</td><td><button class="timbrado-mini-btn" onclick="editarPromotorPromotoria(${Number(row.id)})">Editar</button></td></tr>`).join("") || '<tr><td colspan="6">Sin promotores.</td></tr>'}</tbody></table></div></section><section><div class="promotoria-catalog-head"><div><p class="section-kicker">Catálogo</p><h4>Supervisores</h4></div><button class="mio-action mio-teal" type="button" onclick="nuevoSupervisorPromotoria()">Nuevo supervisor</button></div><div class="table-wrap promotoria-catalog-table"><table><thead><tr><th>Nombre</th><th>Estado</th><th></th></tr></thead><tbody>${supervisors.map((row) => `<tr><td>${promotoriaEscape(row.nombre)}</td><td>${Number(row.activo) ? "Activo" : "Baja"}</td><td><button class="timbrado-mini-btn" onclick="editarSupervisorPromotoria(${Number(row.id)})">Editar</button></td></tr>`).join("") || '<tr><td colspan="3">Sin supervisores capturados.</td></tr>'}</tbody></table></div></section></div>`;
+    return;
+  }
+  if (promotoriaTab === "objetivos") {
+    const rows = promotoriaSummaryData?.rows || [];
+    const filteredRows = filtrarObjetivosPromotoria(rows);
+    const year = promotoriaSummaryData?.year || document.getElementById("promotoria-year")?.value || new Date().getFullYear();
+    const month = Number(promotoriaSummaryData?.periodo_comparativo_hasta_mes || 12);
+    const monthName = new Intl.DateTimeFormat("es-MX", { month: "short" }).format(new Date(2026, Math.max(0, month - 1), 1)).replace(".", "");
+    const rangeLabel = (targetYear) => {
+      const end = new Date(Number(targetYear), month, 0);
+      const endText = end.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
+      return `01/01/${targetYear} - ${endText}`;
+    };
+    const previousYear = Number(year) - 1;
+    content.innerHTML = `<div class="promotoria-table-title promotoria-report-head"><span>Objetivos por tienda · comparación ene-${promotoriaEscape(monthName)} ${promotoriaEscape(previousYear)} vs. ene-${promotoriaEscape(monthName)} ${promotoriaEscape(year)} · ${filteredRows.length} de ${rows.length} tienda(s)</span><button type="button" class="mio-action mio-green" id="promotoria-report-excel">Reporte a Excel</button></div><p class="muted">La cuota media corresponde al periodo de objetivos; la cuota base aplica el porcentaje configurado al promotor, y sobre esa cuota se calculan los bloques +3%, +8%, +12% y +15%.</p><div class="table-wrap promotoria-objectives-table"><table><thead><tr><th>Cadena</th><th>Promotor</th><th>Tienda</th><th>${promotoriaEscape(previousYear)} mismo periodo<br><small>${promotoriaEscape(rangeLabel(previousYear))}</small></th><th>${promotoriaEscape(year)} mismo periodo<br><small>${promotoriaEscape(rangeLabel(year))}</small></th><th>Cuota media periodo</th><th>Cuota base</th><th>Cuota +3%</th><th>Cuota +8%</th><th>Cuota +12%</th><th>Cuota +15%</th></tr></thead><tbody>${filteredRows.map((row) => `<tr><td>${promotoriaEscape(row.cadena)}</td><td>${promotoriaEscape(row.promotor)}</td><td>${promotoriaEscape(row.tienda)}</td><td>${promotoriaMoney(row.periodo_anterior)}</td><td>${promotoriaMoney(row.periodo_actual)}</td><td>${promotoriaMoney(promotoriaMediaPeriodo(row))}</td><td>${promotoriaMoney(row.cuota_base ?? row.cuota_10)}</td><td>${promotoriaMoney(row.cuota_3)}</td><td>${promotoriaMoney(row.cuota_8)}</td><td>${promotoriaMoney(row.cuota_12)}</td><td>${promotoriaMoney(row.cuota_15)}</td></tr>`).join("") || '<tr><td colspan="11">No hay tiendas con los filtros seleccionados.</td></tr>'}</tbody></table></div>`;
+    content.querySelector("#promotoria-report-excel")?.addEventListener("click", () => exportarReportePromotoriaExcel().catch((e) => alert(e.message || e)));
+    return;
+  }
+  if (promotoriaTab === "comisiones") {
+    const rows = promotoriaSummaryData?.rows || [];
+    const filteredRows = filtrarObjetivosPromotoria(rows);
+    const selectedMonth = Math.max(1, Math.min(12, Number(promotoriaCommissionMonth || 1)));
+    const monthName = nombreMesPromotoria(selectedMonth);
+    const monthOptions = mesesPromotoria().map((name, index) => `<option value="${index + 1}" ${index + 1 === selectedMonth ? "selected" : ""}>${promotoriaEscape(name)}</option>`).join("");
+    const commissionRows = filteredRows.map((row) => ({ ...row, comision: calcularComisionPromotoria(row, selectedMonth) }));
+    const totalComision = commissionRows.reduce((sum, row) => sum + Number(row.comision.monto || 0), 0);
+    content.innerHTML = `<div class="promotoria-table-title promotoria-commission-head"><span>Pago de comisiones · ${commissionRows.length} de ${rows.length} tienda(s) · total estimado ${promotoriaMoney(totalComision)}</span><label>Mes<select id="promotoria-comision-month">${monthOptions}</select></label></div><p class="muted">El alcance se evalúa contra la venta de ${promotoriaEscape(monthName)}. La comisión suma cada bloque activo alcanzado por tienda.</p><div class="table-wrap promotoria-commission-table"><table><thead><tr><th>Cadena</th><th>Promotor</th><th>Tienda</th><th>Cuota media</th><th>Venta ${promotoriaEscape(monthName)}</th><th>Cuota alcanzada</th><th>Meta alcanzada</th><th>Comisión</th></tr></thead><tbody>${commissionRows.map((row) => `<tr><td>${promotoriaEscape(row.cadena)}</td><td>${promotoriaEscape(row.promotor)}</td><td>${promotoriaEscape(row.tienda)}</td><td>${promotoriaMoney(row.media)}</td><td>${promotoriaMoney(row.comision.venta)}</td><td><span class="promotoria-commission-badge ${row.comision.nivel ? "is-hit" : ""}">${promotoriaEscape(row.comision.nivel || "Sin cuota")}</span></td><td>${row.comision.nivel ? promotoriaMoney(row.comision.meta) : "-"}</td><td>${promotoriaMoney(row.comision.monto)}</td></tr>`).join("") || '<tr><td colspan="8">No hay tiendas con los filtros seleccionados.</td></tr>'}</tbody></table></div>`;
+    content.querySelector("#promotoria-comision-month")?.addEventListener("change", (event) => {
+      promotoriaCommissionMonth = Number(event.target.value || 1);
+      renderPromotoria();
+    });
+    return;
+  }
+  if (promotoriaTab === "porcentajes") {
+    const rows = porcentajesComisionPromotoria();
+    content.innerHTML = `<div class="promotoria-table-title">Porcentajes y montos de comisión</div><p class="muted">Define el monto a pagar cuando una tienda alcance cada bloque. Si un nivel está inactivo no se tomará para el cálculo.</p><div class="table-wrap promotoria-percent-table"><table><thead><tr><th>Bloque</th><th>Monto comisión</th><th>Activo</th></tr></thead><tbody>${rows.map((row, index) => `<tr><td>Cuota +${Math.round(Number(row.porcentaje || 0) * 100)}%</td><td><input id="promotoria-comision-monto-${index}" type="number" min="0" step="0.01" value="${Number(row.monto || 0).toFixed(2)}"></td><td><label class="promotoria-check"><input id="promotoria-comision-activo-${index}" type="checkbox" ${Number(row.activo) ? "checked" : ""}> Activo</label></td></tr>`).join("")}</tbody></table></div><div class="promotoria-percent-actions"><button type="button" class="mio-action mio-blue" id="promotoria-comisiones-save">Guardar porcentajes</button></div>`;
+    content.querySelector("#promotoria-comisiones-save")?.addEventListener("click", () => guardarPorcentajesComisionPromotoria().catch((e) => alert(e.message || e)));
+    return;
+  }
+  if (promotoriaTab === "pendientes") {
+    const rows = promotoriaPendientesData?.rows || [];
+    queueMicrotask(() => renderPendingRowsPromotoria(content, rows, promotores));
+    content.innerHTML = `<p class="muted">Selecciona un promotor del catálogo para cada tienda que llegó en sell-out sin estructura.</p><div class="table-wrap promotoria-pending-table"><table><thead><tr><th>Tienda</th><th>Cadena</th><th>Código tienda</th><th>Meses</th><th>Sell-out</th><th>Promotor</th><th>Acción</th></tr></thead><tbody>${rows.map((row, index) => `<tr><td>${promotoriaEscape(row.tienda)}</td><td>${promotoriaEscape(row.cadena)}</td><td>${promotoriaEscape(row.tienda_codigo)}</td><td>${promotoriaEscape(row.meses)}</td><td>${promotoriaMoney(row.total)}</td><td><select id="promotoria-pendiente-promotor-${index}">${promotoriaSelectOptions(promotores, "SIN SERVICIO")}</select></td><td><button class="timbrado-mini-btn" onclick="asignarPendientePromotoria(${index})">Asignar</button></td></tr>`).join("") || `<tr><td colspan="7">No hay asociaciones pendientes.</td></tr>`}</tbody></table></div>`;
+    return;
+  }
+  if (promotoriaTab === "diagnostico") {
+    const rows = promotoriaSummaryData?.rows || [];
+    const monthLabels = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+    const maxMonth = Math.max(
+      Number(promotoriaSummaryData?.periodo_comparativo_hasta_mes || 0),
+      ...rows.flatMap((row) => Object.entries(row.meses || {}).filter(([, value]) => Number(value || 0) !== 0).map(([month]) => Number(month)))
+    );
+    const months = Array.from({ length: Math.max(1, Math.min(maxMonth || 12, 12)) }, (_, index) => index + 1);
+    const monthHeaders = months.map((month) => `<th>${monthLabels[month]}</th>`).join("");
+    const monthCells = (row) => months.map((month) => `<td>${promotoriaMoney(row.meses?.[String(month)])}</td>`).join("");
+    content.innerHTML = `<div class="promotoria-table-title">Diagnóstico de base · misma lectura de la estructura de cuotas</div><p class="muted">Muestra los campos de estructura y los meses de sell-out disponibles para el año seleccionado.</p><div class="table-wrap promotoria-diagnostic-table"><table><thead><tr><th>Cadena</th><th>Tipo</th><th>Activo</th><th>Supervisor</th><th>Estado</th><th>Promotor</th><th>Tienda</th>${monthHeaders}<th>Media</th><th>Vínculo</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${promotoriaEscape(row.cadena)}</td><td>${promotoriaEscape(row.status)}</td><td>${promotoriaEscape(row.activa)}</td><td>${promotoriaEscape(row.supervisor)}</td><td>${promotoriaEscape(row.estado)}</td><td>${promotoriaEscape(row.promotor)}</td><td>${promotoriaEscape(row.tienda)}</td>${monthCells(row)}<td>${promotoriaMoney(row.media)}</td><td>${promotoriaEscape(row.estado_datos)}</td></tr>`).join("") || `<tr><td colspan="${9 + months.length}">Importa la estructura y el sell-out para ver el diagnóstico.</td></tr>`}</tbody></table></div>`;
+    return;
+  }
+  if (promotoriaTab === "importaciones") {
+    content.innerHTML = `<div class="promotoria-import-grid"><section><p class="section-kicker">Base</p><h4>Archivos de trabajo</h4><p class="muted">Carga la estructura, sell-out y vínculos desde Excel. Estos botones se separaron de Objetivos para dejar limpia la consulta.</p></section><section><button type="button" class="mio-action mio-purple" id="promotoria-import-base">Importar estructura</button><button type="button" class="mio-action mio-purple" id="promotoria-import-sellout">Importar sell-out</button><button type="button" class="mio-action mio-teal" id="promotoria-export-links">Descargar vínculos XLSX</button><button type="button" class="mio-action mio-teal" id="promotoria-import-links">Importar vínculos XLSX</button></section></div>`;
+    enlazarImportacionesPromotoria(content);
+    return;
+  }
+}
+
+function porcentajesComisionPromotoria() {
+  const defaults = [
+    { porcentaje: 0.03, monto: 0, activo: 1 },
+    { porcentaje: 0.08, monto: 0, activo: 1 },
+    { porcentaje: 0.12, monto: 0, activo: 1 },
+    { porcentaje: 0.15, monto: 0, activo: 1 },
+  ];
+  const rows = Array.isArray(promotoriaComisionesData?.rows) ? promotoriaComisionesData.rows : [];
+  const byPercent = new Map(rows.map((row) => [Number(row.porcentaje || 0).toFixed(4), row]));
+  return defaults.map((row) => ({ ...row, ...(byPercent.get(Number(row.porcentaje).toFixed(4)) || {}) }));
+}
+
+function mesesPromotoria() {
+  return ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+}
+
+function nombreMesPromotoria(month) {
+  return mesesPromotoria()[Math.max(0, Math.min(11, Number(month || 1) - 1))] || "Mes";
+}
+
+function calcularComisionPromotoria(row, month) {
+  const venta = Number(row?.meses?.[String(month)] || 0);
+  const config = new Map(porcentajesComisionPromotoria().map((item) => [Number(item.porcentaje || 0).toFixed(4), item]));
+  const levels = [
+    { pct: 0.03, key: "cuota_3", label: "+3%" },
+    { pct: 0.08, key: "cuota_8", label: "+8%" },
+    { pct: 0.12, key: "cuota_12", label: "+12%" },
+    { pct: 0.15, key: "cuota_15", label: "+15%" },
+  ];
+  const reached = [];
+  let total = 0;
+  let highestMeta = 0;
+  for (const level of levels) {
+    const meta = Number(row?.[level.key] || 0);
+    const settings = config.get(Number(level.pct).toFixed(4)) || {};
+    if (meta > 0 && venta >= meta && Number(settings.activo ?? 1)) {
+      reached.push(level.label);
+      highestMeta = meta;
+      total += Number(settings.monto || 0);
+    }
+  }
+  return { nivel: reached.join(" + "), meta: highestMeta, monto: total, venta };
+}
+
+async function guardarPorcentajesComisionPromotoria() {
+  const rows = porcentajesComisionPromotoria().map((row, index) => ({
+    porcentaje: row.porcentaje,
+    monto: document.getElementById(`promotoria-comision-monto-${index}`)?.value || 0,
+    activo: document.getElementById(`promotoria-comision-activo-${index}`)?.checked || false,
+  }));
+  await apiJson("/api/promotoria/comisiones/porcentajes", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ rows }),
+  });
+  promotoriaComisionesData = await apiJson("/api/promotoria/comisiones/porcentajes", { headers: authHeaders() });
+  renderPromotoria();
+  alert("Porcentajes de comisión guardados.");
+}
+
+function valorNumeroPromotoria(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? Math.round(number * 100) / 100 : 0;
+}
+
+function descripcionFiltroPromotoria(key) {
+  const selected = promotoriaObjectiveFilters[key];
+  if (!selected) return "Todos";
+  if (!selected.size) return "Ninguno";
+  return [...selected].sort((a, b) => a.localeCompare(b, "es")).join(", ");
+}
+
+function aplicarFormatoHojaPromotoria(ws, rows, widths) {
+  ws["!cols"] = widths.map((wch) => ({ wch }));
+  if (rows.length) {
+    const range = XLSX.utils.decode_range(ws["!ref"]);
+    ws["!autofilter"] = { ref: XLSX.utils.encode_range(range) };
+    ws["!freeze"] = { xSplit: 0, ySplit: 1 };
+  }
+}
+
+function agregarHojaJsonPromotoria(wb, name, rows, widths) {
+  const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Mensaje: "Sin registros con los filtros seleccionados" }]);
+  aplicarFormatoHojaPromotoria(ws, rows, rows.length ? widths : [48]);
+  XLSX.utils.book_append_sheet(wb, ws, name);
+}
+
+function agregarDashboardPromotoriaExcel(wb, rows, options) {
+  const year = options.year;
+  const previousYear = options.previousYear;
+  const monthName = options.monthName;
+  const comparisonMonthName = options.comparisonMonthName;
+  const commissionMonth = options.commissionMonth;
+  const headers = [
+    "Cadena", "Supervisor", "Status", "Promotor", "Tienda",
+    `${previousYear} periodo`, `${year} periodo`, "Cuota media periodo", "Cuota base",
+    `Venta ${monthName}`, "Cuota alcanzada", "Meta alcanzada", "Comision", "Estado datos",
+  ];
+  const tableRows = rows.map((row) => {
+    const comision = calcularComisionPromotoria(row, commissionMonth);
+    return [
+      row.cadena || "",
+      row.supervisor || "",
+      row.status || "",
+      row.promotor || "",
+      row.tienda || "",
+      valorNumeroPromotoria(row.periodo_anterior),
+      valorNumeroPromotoria(row.periodo_actual),
+      valorNumeroPromotoria(promotoriaMediaPeriodo(row)),
+      valorNumeroPromotoria(row.cuota_base ?? row.cuota_10),
+      valorNumeroPromotoria(comision.venta),
+      comision.nivel || "Sin cuota",
+      comision.nivel ? valorNumeroPromotoria(comision.meta) : 0,
+      valorNumeroPromotoria(comision.monto),
+      row.estado_datos || "",
+    ];
+  });
+  const dataRows = tableRows.length ? tableRows : [["Sin registros con los filtros seleccionados", "", "", "", "", "", "", "", "", "", "", "", "", ""]];
+  const headerRow = 8;
+  const firstDataRow = headerRow + 1;
+  const lastDataRow = headerRow + dataRows.length;
+  const aoa = [
+    ["Dashboard promotoría - objetivos y comisiones"],
+    ["Año", year, "Mes comisión", monthName, "Periodo objetivos", `Enero a ${comparisonMonthName}`],
+    [],
+    ["Tiendas visibles", { f: `SUBTOTAL(103,A${firstDataRow}:A${lastDataRow})` }, "Venta mes visible", { f: `SUBTOTAL(109,J${firstDataRow}:J${lastDataRow})` }, "Comisión visible", { f: `SUBTOTAL(109,M${firstDataRow}:M${lastDataRow})` }],
+    ["Cadena", descripcionFiltroPromotoria("cadena"), "Supervisor", descripcionFiltroPromotoria("supervisor"), "Status", descripcionFiltroPromotoria("status"), "Promotor", descripcionFiltroPromotoria("promotor")],
+    ["Usa los filtros de la tabla para analizar cuotas, objetivos alcanzados y comisión por promotor, tienda o cadena."],
+    [],
+    headers,
+    ...dataRows,
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [16, 18, 14, 22, 34, 16, 16, 18, 14, 16, 24, 16, 14, 18].map((wch) => ({ wch }));
+  ws["!autofilter"] = { ref: `A${headerRow}:N${lastDataRow}` };
+  ws["!freeze"] = { xSplit: 0, ySplit: headerRow };
+  ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 6 } }];
+  const moneyColumns = [5, 6, 7, 8, 9, 11, 12];
+  for (let r = firstDataRow; r <= lastDataRow; r += 1) {
+    moneyColumns.forEach((c) => {
+      const cell = ws[XLSX.utils.encode_cell({ r: r - 1, c })];
+      if (cell) cell.z = "$#,##0.00";
+    });
+  }
+  ["B4", "D4", "F4"].forEach((cellRef) => {
+    if (ws[cellRef]) ws[cellRef].z = cellRef === "B4" ? "0" : "$#,##0.00";
+  });
+  XLSX.utils.book_append_sheet(wb, ws, "Dashboard");
+}
+
+async function exportarReportePromotoriaExcel() {
+  const rows = promotoriaSummaryData?.rows || [];
+  const year = Number(promotoriaSummaryData?.year || document.getElementById("promotoria-year")?.value || new Date().getFullYear());
+  const previousYear = year - 1;
+  const comparisonMonth = Number(promotoriaSummaryData?.periodo_comparativo_hasta_mes || 12);
+  const commissionMonth = Math.max(1, Math.min(12, Number(promotoriaCommissionMonth || 1)));
+  const monthName = nombreMesPromotoria(commissionMonth);
+  const dashboardRows = rows.map((row) => {
+    const comision = calcularComisionPromotoria(row, commissionMonth);
+    return {
+      Cadena: row.cadena || "",
+      Supervisor: row.supervisor || "",
+      Status: row.status || "",
+      Promotor: row.promotor || "",
+      Tienda: row.tienda || "",
+      "Periodo anterior": valorNumeroPromotoria(row.periodo_anterior),
+      "Periodo actual": valorNumeroPromotoria(row.periodo_actual),
+      "Cuota media periodo": valorNumeroPromotoria(promotoriaMediaPeriodo(row)),
+      "Cuota base": valorNumeroPromotoria(row.cuota_base ?? row.cuota_10),
+      [`Venta ${monthName}`]: valorNumeroPromotoria(comision.venta),
+      "Cuota alcanzada": comision.nivel || "Sin cuota",
+      "Meta alcanzada": comision.nivel ? valorNumeroPromotoria(comision.meta) : 0,
+      Comision: valorNumeroPromotoria(comision.monto),
+      "Estado datos": row.estado_datos || "",
+    };
+  });
+  const objetivoRows = rows.map((row) => ({
+    Cadena: row.cadena || "",
+    Supervisor: row.supervisor || "",
+    Status: row.status || "",
+    Promotor: row.promotor || "",
+    Tienda: row.tienda || "",
+    [`${previousYear} mismo periodo`]: valorNumeroPromotoria(row.periodo_anterior),
+    [`${year} mismo periodo`]: valorNumeroPromotoria(row.periodo_actual),
+    "Cuota media periodo": valorNumeroPromotoria(promotoriaMediaPeriodo(row)),
+    "Cuota base": valorNumeroPromotoria(row.cuota_base ?? row.cuota_10),
+    "Cuota +3%": valorNumeroPromotoria(row.cuota_3),
+    "Cuota +8%": valorNumeroPromotoria(row.cuota_8),
+    "Cuota +12%": valorNumeroPromotoria(row.cuota_12),
+    "Cuota +15%": valorNumeroPromotoria(row.cuota_15),
+  }));
+  const comisionRows = rows.map((row) => {
+    const comision = calcularComisionPromotoria(row, commissionMonth);
+    return {
+      Cadena: row.cadena || "",
+      Supervisor: row.supervisor || "",
+      Status: row.status || "",
+      Promotor: row.promotor || "",
+      Tienda: row.tienda || "",
+      "Cuota media periodo": valorNumeroPromotoria(promotoriaMediaPeriodo(row)),
+      [`Venta ${monthName}`]: valorNumeroPromotoria(comision.venta),
+      "Cuota alcanzada": comision.nivel || "Sin cuota",
+      "Meta alcanzada": comision.nivel ? valorNumeroPromotoria(comision.meta) : 0,
+      "Comision": valorNumeroPromotoria(comision.monto),
+    };
+  });
+  const porcentajeRows = porcentajesComisionPromotoria().map((row) => ({
+    Bloque: `Cuota +${Math.round(Number(row.porcentaje || 0) * 100)}%`,
+    Porcentaje: Number(row.porcentaje || 0),
+    "Monto comision": valorNumeroPromotoria(row.monto),
+    Activo: Number(row.activo) ? "Si" : "No",
+  }));
+  const filtroRows = [
+    { Filtro: "Año", Valor: year },
+    { Filtro: "Mes comisiones", Valor: monthName },
+    { Filtro: "Mes comparativo objetivos", Valor: nombreMesPromotoria(comparisonMonth) },
+    { Filtro: "Cadena", Valor: descripcionFiltroPromotoria("cadena") },
+    { Filtro: "Supervisor", Valor: descripcionFiltroPromotoria("supervisor") },
+    { Filtro: "Status", Valor: descripcionFiltroPromotoria("status") },
+    { Filtro: "Promotor", Valor: descripcionFiltroPromotoria("promotor") },
+  ];
+  const response = await apiFetch("/api/promotoria/reporte-excel", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      year,
+      previous_year: previousYear,
+      month_name: monthName,
+      periodo: `Enero a ${nombreMesPromotoria(comparisonMonth)}`,
+      dashboard_rows: dashboardRows,
+      objetivos: objetivoRows,
+      comisiones: comisionRows,
+      porcentajes: porcentajeRows,
+      filtros: filtroRows,
+    }),
+  });
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `promotoria_dashboard_${year}_${String(commissionMonth).padStart(2, "0")}.xlsx`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function valorFiltroObjetivoPromotoria(row, key) {
+  const value = String(row?.[key] ?? "").trim();
+  return value || "SIN DATO";
+}
+
+function valoresFiltroObjetivoPromotoria(rows, key) {
+  return [...new Set((rows || []).map((row) => valorFiltroObjetivoPromotoria(row, key)))]
+    .sort((a, b) => a.localeCompare(b, "es"));
+}
+
+function filtroObjetivoActivo(key, value, values) {
+  const selected = promotoriaObjectiveFilters[key];
+  if (!selected) return true;
+  return selected.has(value);
+}
+
+function filtrarObjetivosPromotoria(rows) {
+  return (rows || []).filter((row) => ["cadena", "supervisor", "status", "promotor"].every((key) => {
+    const selected = promotoriaObjectiveFilters[key];
+    if (!selected) return true;
+    return selected.has(valorFiltroObjetivoPromotoria(row, key));
+  }));
+}
+
+function renderPanelFiltroObjetivoPromotoria(rows, key, label, tone) {
+  const values = valoresFiltroObjetivoPromotoria(rows, key);
+  const selected = promotoriaObjectiveFilters[key];
+  const searchValue = key === "promotor" ? String(promotoriaObjectiveFilters.promotorSearch || "") : "";
+  const visibleValues = key === "promotor" && searchValue
+    ? values.filter((value) => value.toUpperCase().includes(searchValue.toUpperCase()))
+    : values;
+  const activeCount = selected ? selected.size : values.length;
+  const searchBox = key === "promotor"
+    ? `<div class="promotoria-filter-search-wrap"><input class="promotoria-filter-search" data-promotoria-filter-search="${promotoriaEscape(key)}" value="${promotoriaEscape(searchValue)}" placeholder="Buscar promotor" autocomplete="off"><button type="button" class="promotoria-filter-search-clear ${searchValue ? "" : "hidden"}" data-promotoria-filter-clear="${promotoriaEscape(key)}" title="Limpiar búsqueda">×</button></div>`
+    : "";
+  const chips = visibleValues.map((value) => {
+    const active = filtroObjetivoActivo(key, value, values);
+    return `<button type="button" class="promotoria-filter-chip ${active ? "is-active" : ""}" data-promotoria-filter-chip data-filter-key="${promotoriaEscape(key)}" data-filter-value="${promotoriaEscape(value)}">${promotoriaEscape(value)}</button>`;
+  }).join("");
+  return `<section class="promotoria-filter-card promotoria-filter-${promotoriaEscape(tone)}"><div class="promotoria-filter-head"><b>${promotoriaEscape(label)}</b>${searchBox}<span>${activeCount}/${values.length}</span><button type="button" title="Seleccionar todo" data-promotoria-filter-all="${promotoriaEscape(key)}">Todos</button><button type="button" title="Quitar selección" data-promotoria-filter-none="${promotoriaEscape(key)}">Ninguno</button></div><div class="promotoria-filter-chips">${chips}<span class="muted promotoria-filter-empty ${chips ? "hidden" : ""}">Sin coincidencias</span></div></section>`;
+}
+
+function renderFiltrosObjetivosPromotoria(rows) {
+  return `<div class="promotoria-objective-filters">${renderPanelFiltroObjetivoPromotoria(rows, "cadena", "Cadena", "blue")}${renderPanelFiltroObjetivoPromotoria(rows, "supervisor", "Supervisor", "green")}${renderPanelFiltroObjetivoPromotoria(rows, "status", "Status", "blue")}${renderPanelFiltroObjetivoPromotoria(rows, "promotor", "Promotor", "orange")}</div>`;
+}
+
+function activarFiltrosObjetivosPromotoria(content, rows) {
+  const applySearch = (input) => {
+    const key = input.dataset.promotoriaFilterSearch;
+    const text = (input.value || "").toUpperCase();
+    promotoriaObjectiveFilters[`${key}Search`] = input.value || "";
+    const card = input.closest(".promotoria-filter-card");
+    let visible = 0;
+    card?.querySelectorAll("[data-promotoria-filter-chip]").forEach((chip) => {
+      const match = String(chip.dataset.filterValue || "").toUpperCase().includes(text);
+      chip.style.display = match ? "" : "none";
+      if (match) visible += 1;
+    });
+    card?.querySelector(".promotoria-filter-empty")?.classList.toggle("hidden", visible > 0);
+    card?.querySelector("[data-promotoria-filter-clear]")?.classList.toggle("hidden", !input.value);
+  };
+  content.querySelectorAll("[data-promotoria-filter-search]").forEach((input) => {
+    input.addEventListener("input", () => {
+      applySearch(input);
+    });
+  });
+  content.querySelectorAll("[data-promotoria-filter-clear]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const card = button.closest(".promotoria-filter-card");
+      const input = card?.querySelector(`[data-promotoria-filter-search="${button.dataset.promotoriaFilterClear}"]`);
+      if (!input) return;
+      input.value = "";
+      applySearch(input);
+      input.focus();
+    });
+  });
+  content.querySelectorAll("[data-promotoria-filter-chip]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.filterKey;
+      const value = button.dataset.filterValue;
+      const values = valoresFiltroObjetivoPromotoria(rows, key);
+      let selected = promotoriaObjectiveFilters[key];
+      if (!selected) selected = new Set(values);
+      if (selected.has(value)) selected.delete(value);
+      else selected.add(value);
+      promotoriaObjectiveFilters[key] = selected.size === values.length ? null : selected;
+      renderPromotoria();
+    });
+  });
+  content.querySelectorAll("[data-promotoria-filter-all]").forEach((button) => {
+    button.addEventListener("click", () => {
+      promotoriaObjectiveFilters[button.dataset.promotoriaFilterAll] = null;
+      renderPromotoria();
+    });
+  });
+  content.querySelectorAll("[data-promotoria-filter-none]").forEach((button) => {
+    button.addEventListener("click", () => {
+      promotoriaObjectiveFilters[button.dataset.promotoriaFilterNone] = new Set();
+      renderPromotoria();
+    });
+  });
+}
+
+function promotoriaSelectOptions(names, fallback = "") {
+  const items = [...new Set((names || []).map((item) => String(item || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
+  if (fallback && !items.some((item) => item.toUpperCase() === fallback.toUpperCase())) items.unshift(fallback);
+  return items.map((item) => `<option value="${promotoriaEscape(item)}">${promotoriaEscape(item)}</option>`).join("");
+}
+
+function promotoriaPendienteKey(row) {
+  return `${row?.tienda_key || ""}|${row?.tienda_codigo || ""}|${row?.cadena || ""}|${row?.tienda || ""}`;
+}
+
+function seleccionarPendientePromotoria(index) {
+  const row = (promotoriaPendientesData?.rows || [])[Number(index)];
+  const select = document.getElementById(`promotoria-pendiente-promotor-${Number(index)}`);
+  if (row && select) promotoriaPendienteSeleccion.set(promotoriaPendienteKey(row), select.value);
+}
+
+function renderPendingRowsPromotoria(content, rows, promotores) {
+  const optionsFor = (selected) => {
+    const items = [...new Set(["SIN SERVICIO", ...(promotores || [])].map((item) => String(item || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
+    return items.map((item) => `<option value="${promotoriaEscape(item)}"${item.toUpperCase() === String(selected || "SIN SERVICIO").toUpperCase() ? " selected" : ""}>${promotoriaEscape(item)}</option>`).join("");
+  };
+  content.innerHTML = `<p class="muted">Cada tienda conserva su selección de promotor hasta que presiones Asignar.</p><div class="table-wrap promotoria-pending-table"><table><thead><tr><th>Tienda</th><th>Cadena</th><th>Código tienda</th><th>Meses</th><th>Sell-out</th><th>Promotor</th><th>Acción</th></tr></thead><tbody>${rows.map((row, index) => { const selected = promotoriaPendienteSeleccion.get(promotoriaPendienteKey(row)) || "SIN SERVICIO"; return `<tr><td>${promotoriaEscape(row.tienda)}</td><td>${promotoriaEscape(row.cadena)}</td><td>${promotoriaEscape(row.tienda_codigo)}</td><td>${promotoriaEscape(row.meses)}</td><td>${promotoriaMoney(row.total)}</td><td><select id="promotoria-pendiente-promotor-${index}" onchange="seleccionarPendientePromotoria(${index})">${optionsFor(selected)}</select></td><td><button class="timbrado-mini-btn" onclick="asignarPendientePromotoria(${index})">Asignar</button></td></tr>`; }).join("") || '<tr><td colspan="7">No hay asociaciones pendientes.</td></tr>'}</tbody></table></div>`;
+}
+
+function actualizarSeleccionAsignacionPromotoria() {
+  const selectedId = Number(document.getElementById("promotoria-asignar-tienda")?.value || 0);
+  const row = (promotoriaAdminData?.tiendas || []).find((item) => Number(item.id) === selectedId);
+  const detail = document.getElementById("promotoria-asignar-detalle");
+  if (!detail) return;
+  // El nombre de la tienda es el dato principal de esta ficha.  Se deja como
+  // texto continuo para que el CSS pueda repartirlo en hasta dos renglones,
+  // sin invadir los controles de promotor y tienda.
+  detail.textContent = row ? `${row.tienda || ""} · ${row.cadena || ""}`.replace(/^\s*·\s*|\s*·\s*$/g, "") : "";
+  detail.title = row ? `Actual: ${row.promotor || "SIN SERVICIO"} · Supervisor: ${row.supervisor || "SIN SERVICIO"} · Cliente: ${row.cliente_numero || "sin vínculo"}` : "";
+  const clientSelect = document.getElementById("promotoria-asignar-cliente");
+  const promotorSelect = document.getElementById("promotoria-asignar-promotor");
+  if (clientSelect && row) clientSelect.value = row.cliente_numero ? `${row.cliente_empresa || ""}|${row.cliente_numero}` : "";
+  if (promotorSelect && row) promotorSelect.value = row.promotor || "SIN SERVICIO";
+}
+
+function seleccionarAsignacionPromotoria(id) {
+  const select = document.getElementById("promotoria-asignar-tienda");
+  if (!select) return;
+  select.value = String(id);
+  actualizarSeleccionAsignacionPromotoria();
+  document.querySelector("#view-promotoria .promotoria-assignment-card")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function guardarAsignacionComboPromotoria() {
+  const id = Number(document.getElementById("promotoria-asignar-tienda")?.value || 0);
+  const promotor = document.getElementById("promotoria-asignar-promotor")?.value || "";
+  const clientValue = document.getElementById("promotoria-asignar-cliente")?.value || "";
+  const [cliente_empresa, cliente_numero] = clientValue.split("|", 2);
+  const row = (promotoriaAdminData?.tiendas || []).find((item) => Number(item.id) === id);
+  if (!row || !promotor) { alert("Selecciona un promotor y una tienda."); return; }
+  const meta = (promotoriaAdminData?.promotores || []).find((item) => String(item.nombre || "").toUpperCase() === String(promotor).toUpperCase());
+  await apiJson("/api/promotoria/admin/asignaciones", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ ...row, id, promotor, cliente_numero: cliente_numero || "", cliente_empresa: cliente_empresa || "", supervisor: meta?.supervisor || row.supervisor, status: row.status, activa: row.activa, horario: row.horario, tienda_codigo: row.tienda_codigo, cuota_objetivo: row.cuota_objetivo, porcentaje_objetivo: row.porcentaje_objetivo }) });
+  alert(`Se guardó la asociación de ${row.tienda}: promotor ${promotor}${cliente_numero ? ` y cliente ${cliente_numero}` : " sin vínculo de cliente"}.`);
+  await cargarPromotoria();
+}
+
+async function descargarVinculosPromotoria() {
+  const response = await apiFetch("/api/promotoria/admin/asociaciones/xlsx", { headers: authHeaders() });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.detail || "No se pudo generar la base de asociaciones.");
+  }
+  const link = document.createElement("a");
+  const url = URL.createObjectURL(await response.blob());
+  link.href = url;
+  link.download = "asociaciones_promotoria.xlsx";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function importarVinculosPromotoria() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".xlsx";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const response = await apiFetch("/api/promotoria/admin/asociaciones/xlsx", { method: "POST", headers: authHeaders(), body: form });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || "No se pudieron importar los vínculos.");
+      const errors = (data.errores || []).length ? `\n\nRevisa ${data.errores.length} aviso(s):\n${data.errores.join("\n")}` : "";
+      alert(`${data.mensaje || "Vínculos importados."}${errors}`);
+      await cargarPromotoria();
+    } catch (error) {
+      alert(error.message || error);
+    }
+  };
+  input.click();
+}
+
+function importarArchivoPromotoria(url, accept, etiqueta) {
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = accept;
+  input.onchange = async () => {
+    const file = input.files?.[0]; if (!file) return;
+    const form = new FormData(); form.append("file", file);
+    try {
+      const response = await fetch(url, { method: "POST", headers: authHeaders(), body: form });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `No se pudo importar ${etiqueta}.`);
+      alert(payload.mensaje || `${etiqueta} importado correctamente.`);
+      await cargarPromotoria();
+    } catch (error) { alert(error.message || error); }
+  };
+  input.click();
+}
+
+function nuevoPromotorPromotoria() { promotoriaEditor = { tipo:"promotor", nombre:"", supervisor:"", cuota_objetivo:0, porcentaje_objetivo:.10, activo:true }; promotoriaTab = "catalogos"; renderPromotoria(); }
+function editarPromotorPromotoria(id) { const row = (promotoriaAdminData?.promotores || []).find((item) => Number(item.id) === Number(id)); if (row) { promotoriaEditor = { ...row, tipo:"promotor" }; promotoriaTab = "catalogos"; renderPromotoria(); } }
+function nuevoSupervisorPromotoria() { promotoriaEditor = { tipo:"supervisor", nombre:"", activo:true }; promotoriaTab = "catalogos"; renderPromotoria(); }
+function editarSupervisorPromotoria(id) { const row = (promotoriaAdminData?.supervisores_catalogo || []).find((item) => Number(item.id) === Number(id)); if (row) { promotoriaEditor = { ...row, tipo:"supervisor" }; promotoriaTab = "catalogos"; renderPromotoria(); } }
+function cancelarEditorPromotoria() { promotoriaEditor = null; renderPromotoria(); }
+async function guardarEditorPromotoria() {
+  const editor = promotoriaEditor; if (!editor) return;
+  const nombre = document.getElementById("promotoria-editor-nombre")?.value.trim() || "";
+  if (!nombre) { alert("Captura el nombre."); return; }
+  const activo = document.getElementById("promotoria-editor-activo")?.checked;
+  if (editor.tipo === "supervisor") await apiJson("/api/promotoria/admin/supervisores", { method:"POST", headers:authHeaders({"Content-Type":"application/json"}), body:JSON.stringify({ id:editor.id || 0, nombre, activo }) });
+  else await apiJson("/api/promotoria/admin/promotores", { method:"POST", headers:authHeaders({"Content-Type":"application/json"}), body:JSON.stringify({ id:editor.id || 0, nombre, supervisor:document.getElementById("promotoria-editor-supervisor")?.value || "", cuota_objetivo:document.getElementById("promotoria-editor-cuota")?.value || 0, porcentaje_objetivo:document.getElementById("promotoria-editor-porcentaje")?.value || 0, activo }) });
+  promotoriaEditor = null; await cargarPromotoria();
+}
+async function bajaPromotorPromotoria(id) { if (!confirm("¿Dar de baja a este promotor?")) return; await apiJson(`/api/promotoria/admin/promotores/${encodeURIComponent(id)}/baja`, { method: "POST", headers: authHeaders() }); await cargarPromotoria(); }
+async function editarAsignacionPromotoria(id) {
+  const row = (promotoriaAdminData?.tiendas || []).find((item) => Number(item.id) === Number(id));
+  if (!row) return;
+  const promotor = prompt("Promotor asignado:", row.promotor || ""); if (promotor === null) return;
+  const supervisor = prompt("Supervisor:", row.supervisor || ""); if (supervisor === null) return;
+  const status = prompt("Estatus:", row.status || ""); if (status === null) return;
+  await apiJson("/api/promotoria/admin/asignaciones", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ ...row, id, promotor, supervisor, status }) });
+  await cargarPromotoria();
+}
+async function asignarPendientePromotoria(index) {
+  const row = (promotoriaPendientesData?.rows || [])[Number(index)]; if (!row) return;
+  const promotor = document.getElementById(`promotoria-pendiente-promotor-${Number(index)}`)?.value || "";
+  if (!promotor) { alert("Selecciona un promotor del catálogo."); return; }
+  const meta = (promotoriaAdminData?.promotores || []).find((item) => String(item.nombre || "").toUpperCase() === String(promotor).toUpperCase());
+  await apiJson("/api/promotoria/sellout/asignar", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ ...row, promotor, supervisor: meta?.supervisor || "SIN SERVICIO" }) });
+  await cargarPromotoria();
 }
 
 function renderStats(stats) {
@@ -2845,6 +3532,14 @@ function invoiceProductHasDiscount(product) {
     || raw === "s\u00c3\u00ad";
 }
 
+// El descuento se conserva por partida. Al reabrir una factura puede venir
+// calculado en la línea o determinarse a partir del indicador del catálogo.
+function invoiceLineDiscountPct(row, payload = {}) {
+  const explicit = Number(row?.descuento_pct);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  return invoiceProductHasDiscount(row) ? parseInvoiceNumber(payload.descuento_pct) : 0;
+}
+
 function calculateInvoiceRow(row) {
   if (!row) return 0;
   const product = productDataForInvoiceRow(row);
@@ -2854,13 +3549,9 @@ function calculateInvoiceRow(row) {
   const otherPrice = parseInvoiceNumber(invoiceCellText(row, 7));
   const sliceValue = row.querySelector("select")?.value || "";
   const slicePct = sliceValue === "Sí" ? parseInvoiceNumber(invoiceSliceCharge?.value) : 0;
-  const discountPct = parseInvoiceNumber(invoiceDiscount?.value);
-  const hasDiscount = invoiceProductHasDiscount(product);
   let realPrice = basePrice;
-  if (hasDiscount) {
-    const denom = 1.0 - (discountPct / 100);
-    if (denom > 0) realPrice = basePrice / denom;
-  }
+  // El precio de la lista es el precio base. El descuento se calcula aparte
+  // en el resumen y en el CFDI; nunca se aumenta para compensarlo.
   realPrice = realPrice * (1 + (slicePct / 100));
   if (invoiceProductHasIva(product)) {
     realPrice /= 1.16;
@@ -2885,23 +3576,23 @@ function calculateInvoiceTotals() {
   if (!invoiceProductsTable) return;
   let subtotal = 0;
   let taxableSubtotal = 0;
-  let discountableSubtotal = 0;
-  let discountableTaxableSubtotal = 0;
+  let discount = 0;
+  let taxableDiscount = 0;
   invoiceRows().forEach((row) => {
     const amount = calculateInvoiceRow(row);
     const product = productDataForInvoiceRow(row);
     const hasIva = invoiceProductHasIva(product);
-    const hasDiscount = invoiceProductHasDiscount(product);
+    const hasHistoricalDiscount = row.dataset.descuentoHistorico === "1";
+    const discountPct = hasHistoricalDiscount
+      ? parseInvoiceNumber(row.dataset.descuentoPct)
+      : (invoiceProductHasDiscount(product) ? parseInvoiceNumber(invoiceDiscount?.value) : 0);
+    const lineDiscount = amount * (discountPct / 100);
     subtotal += amount;
     if (hasIva) taxableSubtotal += amount;
-    if (hasDiscount) {
-      discountableSubtotal += amount;
-      if (hasIva) discountableTaxableSubtotal += amount;
-    }
+    discount += lineDiscount;
+    if (hasIva) taxableDiscount += lineDiscount;
   });
-  const discountPct = parseInvoiceNumber(invoiceDiscount?.value);
-  const discount = discountableSubtotal * (discountPct / 100);
-  const taxableBase = taxableSubtotal - (discountableTaxableSubtotal * (discountPct / 100));
+  const taxableBase = taxableSubtotal - taxableDiscount;
   const iva = taxableBase * 0.16;
   const total = (subtotal - discount) + iva;
 
@@ -3130,31 +3821,9 @@ async function loadInvoiceComanda() {
         };
       }
     } else {
-      const conDescuentoProds = productosPreparados.filter((prod) => invoiceProductHasDiscount(prod._product));
-      const sinDescuentoProds = productosPreparados.filter((prod) => !invoiceProductHasDiscount(prod._product));
-      const hasCon = conDescuentoProds.length > 0;
-      const hasSin = sinDescuentoProds.length > 0;
-      if (hasCon && hasSin) {
-        if (_loadComandaAutoPick) {
-          selectedProds = _loadComandaAutoPick === "con" ? conDescuentoProds : sinDescuentoProds;
-          _loadComandaAutoPick = null;
-        } else {
-          const choice = await showGroupSelector(conDescuentoProds.length, sinDescuentoProds.length);
-          selectedProds = choice === "con" ? conDescuentoProds : sinDescuentoProds;
-          pendingGroup = choice === "con" ? "sin" : "con";
-        }
-      } else if (hasCon) {
-        selectedProds = conDescuentoProds;
-      } else {
-        selectedProds = sinDescuentoProds;
-      }
-      if (pendingGroup) {
-        _pendingComandaData = {
-          folio: comanda,
-          group: pendingGroup,
-          count: pendingGroup === "con" ? conDescuentoProds.length : sinDescuentoProds.length
-        };
-      }
+      // EZA2007 e Ibersur ya no se separan por IVA ni por descuento.
+      // Gourmet España conserva arriba su separación por presentación.
+      selectedProds = productosPreparados;
     }
 
     const rows = invoiceRows();
@@ -3227,6 +3896,8 @@ function clearInvoiceRow(row) {
     cell.textContent = "";
   });
   row.dataset.product = "";
+  delete row.dataset.descuentoPct;
+  delete row.dataset.descuentoHistorico;
   calculateInvoiceTotals();
 }
 
@@ -3261,6 +3932,11 @@ function invoiceFilledRows() {
   return invoiceRows()
     .map((row) => {
       const product = productDataForInvoiceRow(row);
+      const importe = parseInvoiceNumber(invoiceCellText(row, 8));
+      const tieneDescuentoHistorico = row.dataset.descuentoHistorico === "1";
+      const descuentoPct = tieneDescuentoHistorico
+        ? parseInvoiceNumber(row.dataset.descuentoPct)
+        : (invoiceProductHasDiscount(product) ? parseInvoiceNumber(invoiceDiscount?.value) : 0);
       return {
         cip: invoiceCellText(row, 0),
         descripcion: invoiceCellText(row, 1),
@@ -3270,11 +3946,13 @@ function invoiceFilledRows() {
         precio_base: parseInvoiceNumber(invoiceCellText(row, 4)),
         precio_otro: parseInvoiceNumber(invoiceCellText(row, 7)),
         rebanado: row.querySelector("select")?.value || "",
-        importe: parseInvoiceNumber(invoiceCellText(row, 8)),
+        importe,
         unidad: product.unidad || "PZA",
         codigo_barras: productBarcodeForInvoice(product),
         iva: invoiceProductHasIva(product) ? "Sí" : "No",
         descuento: product.descuento || "No",
+        descuento_pct: descuentoPct,
+        descuento_importe: importe * (descuentoPct / 100),
       };
     })
     .filter((row) => row.cip || row.descripcion || row.importe > 0);
@@ -3456,10 +4134,8 @@ function renderInvoicePreview(payload) {
   const fiscalName = customer.razon_social || payload.cliente_nombre || "";
   const consignatario = customer.consignatario || payload.consignatario || payload.cliente_nombre || "";
   const productHeaders = isGourmetEspana
-    ? ["Cantidad", "Unidad", "CIP", "Descripción", "Código", "Piezas", "Precio", "Total"]
-    : ["Cantidad", "Unidad", "CIP", "Descripción", "Piezas", "Precio", "Total"];
-  const hasDiscountableProducts = rows.some((row) => invoiceProductHasDiscount(row)) && Number(payload.descuento || 0) > 0;
-  const hasIvaProducts = Number(payload.iva || 0) > 0;
+    ? ["Cantidad", "Unidad", "CIP", "Descripción", "Código", "Piezas", "Precio", "Descuento", "Total"]
+    : ["Cantidad", "Unidad", "CIP", "Descripción", "Piezas", "Precio", "Descuento", "Total"];
   return `
     <section class="invoice-print-sheet">
       <div class="invoice-print-head">
@@ -3538,6 +4214,7 @@ function renderInvoicePreview(payload) {
                 ${isGourmetEspana ? `<td>${escapeCell(row.codigo_barras || "-")}</td>` : ""}
                 <td class="money-cell">${escapeCell(String(row.piezas || ""))}</td>
                 <td class="money-cell">${escapeCell(formatInvoiceNumber(row.precio_otro || row.precio))}</td>
+                <td class="money-cell">${escapeCell(formatInvoiceNumber(invoiceLineDiscountPct(row, payload)))}%</td>
                 <td class="money-cell">${escapeCell(formatInvoiceNumber(row.importe))}</td>
               </tr>
             `).join("")}
@@ -3548,9 +4225,9 @@ function renderInvoicePreview(payload) {
       <div class="invoice-preview-totals">
         <div class="invoice-preview-note" style="align-self:end">${escapeCell(invoiceTotalInWords(payload.total))}</div>
         <div class="invoice-preview-total-box">
-          <div><span>SUMA</span><strong>$${escapeCell(formatInvoiceNumber(payload.subtotal))}</strong></div>
-          ${hasDiscountableProducts ? `<div><span>Descuento (${escapeCell(formatInvoiceNumber(payload.descuento_pct))}%)</span><strong>-$${escapeCell(formatInvoiceNumber(payload.descuento))}</strong></div>` : ""}
-          ${hasIvaProducts ? `<div><span>I.V.A.</span><strong>$${escapeCell(formatInvoiceNumber(payload.iva))}</strong></div>` : ""}
+          <div><span>SUBTOTAL</span><strong>$${escapeCell(formatInvoiceNumber(payload.subtotal))}</strong></div>
+          <div><span>DESCUENTO</span><strong>-$${escapeCell(formatInvoiceNumber(payload.descuento))}</strong></div>
+          <div><span>I.V.A.</span><strong>$${escapeCell(formatInvoiceNumber(payload.iva))}</strong></div>
           <div><span>GRAN TOTAL</span><strong>$${escapeCell(formatInvoiceNumber(payload.total))}</strong></div>
         </div>
       </div>
@@ -3645,6 +4322,7 @@ async function showInvoicePreview() {
           codigo_barras: r.codigo_barras || "",
           piezas: String(r.piezas || ""),
           precio: formatInvoiceNumber(r.precio_otro || r.precio),
+          descuento: formatInvoiceNumber(invoiceLineDiscountPct(r, payload)) + "%",
           importe: formatInvoiceNumber(r.importe),
         })),
       };
@@ -4249,14 +4927,31 @@ async function apiJson(url, options = {}) {
     data = {};
   }
   if (!response.ok) {
-    throw new Error(explicarErrorPac(data.detail || "La operacion no se pudo completar."));
+    throw new Error(explicarErrorPac(detalleErrorApi(data, "La operacion no se pudo completar.")));
   }
   return data;
+}
+
+function detalleErrorApi(data, predeterminado = "La operacion no se pudo completar.") {
+  const detalle = data?.detail;
+  if (Array.isArray(detalle)) {
+    const mensajes = detalle.map((item) => {
+      if (!item || typeof item !== "object") return String(item || "");
+      const campo = Array.isArray(item.loc)
+        ? item.loc.filter((parte) => parte !== "body").join(".")
+        : "";
+      return `${campo ? `${campo}: ` : ""}${item.msg || item.message || "Dato invalido."}`;
+    }).filter(Boolean);
+    return mensajes.join(". ") || predeterminado;
+  }
+  if (detalle && typeof detalle === "object") return detalle.message || detalle.error || JSON.stringify(detalle);
+  return typeof detalle === "string" && detalle.trim() ? detalle : predeterminado;
 }
 
 const INDICE_ERRORES_PAC = [
   ["201", "Solicitud recibida", "La petición se envió correctamente; consulta el estatus SAT antes de considerarla cancelada.", "Consultar estatus / acuse."],
   ["202", "Cancelación en proceso", "El SAT o el receptor todavía debe resolver la solicitud.", "Esperar y sincronizar estatus."],
+  ["302", "Sello de cancelación no aceptado", "Finkok indica que este código suele presentarse por una intermitencia del SAT.", "Consultar Estatus SAT; si persiste tras unos minutos, reportar el UUID a soporte Finkok. No liberar ni cancelar el folio interno."],
   ["708", "SAT no disponible / passphrase", "Finkok no logró conectar con SAT. Si ocurre en cada intento, Finkok indica validar o actualizar el passphrase de cancelación de la cuenta.", "No reintentar repetidamente; solicita el passphrase a soporte Finkok, guárdalo en la empresa y consulta Estatus SAT."],
   ["711", "Certificado de cancelación", "El CSD enviado para cancelar está incompleto o mal codificado.", "Revisar CSD, llave PEM y passphrase en Finkok."],
   ["798", "Solicitud previa", "Ya existe una solicitud de cancelación para el UUID.", "No reenviar; consultar estatus y esperar la resolución."],
@@ -4792,6 +5487,11 @@ function fillInvoiceEditor(item, detail) {
       descuento: line.descuento || "No",
     };
     row.dataset.product = JSON.stringify(product);
+    const descuentoHistorico = parseInvoiceNumber(line.descuento_pct) || parseInvoiceNumber(line.descuento_importe);
+    if (descuentoHistorico > 0) {
+      row.dataset.descuentoPct = String(line.descuento_pct || 0);
+      row.dataset.descuentoHistorico = "1";
+    }
     setInvoiceCell(row, 0, line.cip || "");
     setInvoiceCell(row, 1, line.descripcion || "");
     setInvoiceCell(row, 2, line.cantidad ? formatInvoiceNumber(line.cantidad).replace(/\.00$/, "") : "");
@@ -4896,6 +5596,7 @@ async function reprintSelectedInvoice() {
         codigo_barras: r.codigo_barras || "",
         piezas: String(r.piezas || ""),
         precio: formatInvoiceNumber(r.precio_otro || r.precio),
+        descuento: formatInvoiceNumber(invoiceLineDiscountPct(r, payload)) + "%",
         importe: formatInvoiceNumber(r.importe),
       })),
     };
@@ -4986,6 +5687,31 @@ function openCfdiEmailRecipientsModal(folioFiscal, emails) {
 
 async function sendCfdiByEmailWithRecipients({ folioFiscal, empresa = "", numeroCliente = "", correo = "" }) {
   if (!folioFiscal) throw new Error("Falta el folio fiscal para enviar el correo.");
+  const claveReceptor = String(numeroCliente || "").replace(/,/g, "").trim();
+  const claveComparable = claveReceptor.replace(/\D/g, "") || claveReceptor.toUpperCase();
+  let receptorFiscal = null;
+  if (empresa && claveReceptor) {
+    try {
+      const receptor = await apiJson(`/timbrado/receptores-fiscales/${encodeURIComponent(empresa)}/${encodeURIComponent(claveReceptor)}`, { headers: authHeaders() });
+      if (receptor?.rfc || receptor?.correo_envio) receptorFiscal = receptor;
+    } catch (_) {
+      // Si no existe ficha fiscal, se conserva la compatibilidad con el cliente comercial.
+    }
+    // Algunas facturas históricas llevan coma o ceros en el número comercial.
+    // Se busca la ficha por empresa para no perder el correo ya registrado.
+    if (!receptorFiscal) {
+      try {
+        const receptores = await apiJson(`/timbrado/receptores-fiscales?empresa=${encodeURIComponent(empresa)}`, { headers: authHeaders() });
+        receptorFiscal = (Array.isArray(receptores) ? receptores : []).find((item) => {
+          const clave = String(item?.clave_receptor || "").replace(/,/g, "").trim();
+          const comparable = clave.replace(/\D/g, "") || clave.toUpperCase();
+          return comparable === claveComparable;
+        }) || null;
+      } catch (_) {
+        // El envío sigue disponible aun si no se puede consultar el catálogo fiscal.
+      }
+    }
+  }
   let cliente = null;
   if (empresa && numeroCliente) {
     try {
@@ -4994,10 +5720,19 @@ async function sendCfdiByEmailWithRecipients({ folioFiscal, empresa = "", numero
       // El CFDI se puede reenviar aun si el cliente historico ya no existe.
     }
   }
-  const correosRegistrados = cliente?.correo_electronico || cliente?.email || correo;
+  // La ficha fiscal es la fuente principal: puede diferir del correo comercial.
+  const correosRegistrados = receptorFiscal?.correo_envio || cliente?.correo_electronico || cliente?.email || correo;
   const recipients = await openCfdiEmailRecipientsModal(folioFiscal, splitCustomerEmails(correosRegistrados));
   if (!recipients) return;
-  if (recipients.guardar && cliente && empresa && numeroCliente) {
+  if (recipients.guardar && receptorFiscal) {
+    const empresaReceptor = receptorFiscal.empresa || empresa;
+    const claveGuardada = receptorFiscal.clave_receptor || claveReceptor;
+    await apiJson(`/timbrado/receptores-fiscales/${encodeURIComponent(empresaReceptor)}/${encodeURIComponent(claveGuardada)}/correo`, {
+      method: "PATCH",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ correo_envio: recipients.correos.join("; ") }),
+    });
+  } else if (recipients.guardar && cliente && empresa && numeroCliente) {
     await apiJson(`/api/customers/${encodeURIComponent(empresa)}/${encodeURIComponent(numeroCliente)}`, {
       method: "PUT",
       headers: authHeaders({ "Content-Type": "application/json" }),
@@ -7884,6 +8619,16 @@ function selectedProductCatalogCips() {
   return [...visibleSelected, ...hiddenSelected];
 }
 
+// "Ver ficha" y "Administracion" operan sobre el producto que se ve
+// marcado en pantalla. El Set conserva selecciones de busquedas anteriores
+// para el catalogo multiproducto; no debe impedir abrir una ficha individual.
+function selectedProductCatalogCheckedCips() {
+  if (!productCatalogTableBody) return [];
+  return [...productCatalogTableBody.querySelectorAll('input[type="checkbox"]:checked')]
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+}
+
 function selectedProductCatalogVisibleRows() {
   const empresa = productCatalogCompany?.value || "";
   return productCatalogRows.filter((product) => {
@@ -10409,7 +11154,7 @@ productCatalogTableBody?.addEventListener("change", (event) => {
 
 productCatalogFicha?.addEventListener("click", async () => {
   try {
-    const cips = selectedProductCatalogCips();
+    const cips = selectedProductCatalogCheckedCips();
     if (cips.length !== 1) {
       alert("Selecciona exactamente un producto.");
       return;
@@ -10510,7 +11255,7 @@ productCatalogSyncVps?.addEventListener("click", async () => {
 
 productCatalogAdmin?.addEventListener("click", () => {
   fillCatalogAdminCompanies();
-  const selected = selectedProductCatalogCips()[0] || "";
+  const selected = selectedProductCatalogCheckedCips()[0] || "";
   if (catalogAdminCip && selected) catalogAdminCip.value = selected;
   showCatalogSubpanel("admin");
   renderCatalogAdminImages();
@@ -13969,7 +14714,7 @@ function _refreshInlineEditor(id) {
 }
 
 /* ── HTML generation ── */
-const _CL = { cantidad:"Cantidad", unidad:"Unidad", cip:"CIP", descripcion:"Descripcion", codigo_barras:"Codigo", precio:"Precio", importe:"Total", factura:"Factura", monto_aplicado:"Monto aplicado", saldo_pendiente:"Saldo pendiente" };
+const _CL = { cantidad:"Cantidad", unidad:"Unidad", cip:"CIP", descripcion:"Descripcion", codigo_barras:"Codigo", precio:"Precio", descuento:"Descuento", importe:"Total", factura:"Factura", monto_aplicado:"Monto aplicado", saldo_pendiente:"Saldo pendiente" };
 
 function _itemHtml(item) {
   const p = item.props;
@@ -14015,14 +14760,16 @@ function _itemHtml(item) {
       return co;
     case "table": {
       const cols = p.columns || [];
-      const order = ["cantidad","cip","descripcion","codigo_barras","unidad","precio","importe"];
-      const sorted = order.filter(c => cols.includes(c));
+      const invoiceColumns = cols.includes("descripcion") && !cols.includes("factura");
+      const effectiveColumns = invoiceColumns && !cols.includes("descuento") ? [...cols, "descuento"] : cols;
+      const order = ["cantidad","cip","descripcion","codigo_barras","unidad","precio","descuento","importe"];
+      const sorted = order.filter(c => effectiveColumns.includes(c));
       let t = `  <div class="invoice-preview-table-wrap">\n    <table class="invoice-preview-table">\n      <thead><tr>\n`;
       sorted.forEach(c => { t += `        <th>${_CL[c]||c}</th>\n`; });
       t += `      </tr></thead>\n      <tbody>\n{{#items}}`;
       t += `        <tr>\n`;
       sorted.forEach(c => {
-        const cls = c==="importe" ? ` class="money-cell"` : c==="precio" ? ` class="money-cell"` : "";
+        const cls = ["importe", "precio", "descuento"].includes(c) ? ` class="money-cell"` : "";
         t += `          <td${cls}>{{${c}}}</td>\n`;
       });
       t += `        </tr>\n{{/items}}`;
@@ -14035,8 +14782,8 @@ function _itemHtml(item) {
           ? `    <div class="invoice-preview-note" style="align-self:end">${"{{total_letra}}"}</div>\n`
           : `    <div></div>\n`) +
         `    <div class="invoice-preview-total-box">\n` +
-        (p.showSubtotal ? `      <div><span>SUMA</span><strong>{{subtotal}}</strong></div>\n` : "") +
-        (p.showDiscount ? `      <div><span>Descuento ({{descuento_pct}}%)</span><strong>-{{descuento}}</strong></div>\n` : "") +
+        (p.showSubtotal ? `      <div><span>SUBTOTAL</span><strong>{{subtotal}}</strong></div>\n` : "") +
+        (p.showDiscount ? `      <div><span>DESCUENTO</span><strong>-{{descuento}}</strong></div>\n` : "") +
         (p.showTax ? `      <div><span>I.V.A.</span><strong>{{iva}}</strong></div>\n` : "") +
         `      <div><span>GRAN TOTAL</span><strong>{{total}}</strong></div>\n` +
         `    </div>\n  </div>\n`;
@@ -14139,12 +14886,7 @@ function forceInvoiceTemplateLogo(html, logoUrl) {
 }
 
 function stripZeroTotalLines(html, payload) {
-  if (!payload.descuento || payload.descuento === 0 || payload.descuento === "0" || payload.descuento === "$0.00" || payload.descuento === "-$0.00") {
-    html = html.replace(/<div[^>]*>\s*<span>Descuento[^<]*<\/span><strong>[^<]*<\/strong>\s*<\/div>/gi, "");
-  }
-  if (!payload.iva || payload.iva === 0 || payload.iva === "0" || payload.iva === "$0.00") {
-    html = html.replace(/<div[^>]*>\s*<span>I\.V\.A\.<\/span><strong>[^<]*<\/strong>\s*<\/div>/gi, "");
-  }
+  // El resumen siempre muestra subtotal, descuento e IVA aunque sean cero.
   return html;
 }
 
@@ -14154,7 +14896,7 @@ function defaultFormatItems() {
     { id: uid("1"), type: "header", props: { showLogo: true, showCompany: true, showAddress: true, showRfc: true, showFolio: true, logoUrl: "" } },
     { id: uid("2"), type: "consignatario", props: { twoColumns: true, col1: "cliente", col2: "consignatario", col1Fields: ["name", "address", "rfc"], col2Fields: ["name", "address"] } },
     { id: uid("4"), type: "text", props: { content: "Ubicacion: {{ubicacion}} | Fecha: {{fecha}} | Pago: {{pago}} | N\u00b0 Proveedor: {{no_proveedor}} | Cliente N\u00b0: {{cliente_num}} | Vendedor: {{vendedor}}" } },
-    { id: uid("5"), type: "table", props: { columns: ["cantidad", "cip", "descripcion", "codigo_barras", "unidad", "precio", "importe"] } },
+    { id: uid("5"), type: "table", props: { columns: ["cantidad", "cip", "descripcion", "codigo_barras", "unidad", "precio", "descuento", "importe"] } },
     { id: uid("6"), type: "totals", props: { showSubtotal: true, showDiscount: true, showTax: true, showTotal: true } },
     { id: uid("7"), type: "footer", props: { text: "Gracias por su compra" } },
   ];
@@ -15993,6 +16735,7 @@ async function crmPreviewInvoice(invoiceId, folio) {
           codigo_barras: r.codigo_barras || "",
           piezas: String(r.piezas || ""),
           precio: formatInvoiceNumber(r.precio_otro || r.precio),
+          descuento: formatInvoiceNumber(invoiceLineDiscountPct(r, payload)) + "%",
           importe: formatInvoiceNumber(r.importe),
         })),
       };
@@ -18240,6 +18983,30 @@ function programarFiltroReceptoresFiscales() {
   timbradoRecFilterTimer = setTimeout(() => cargarReceptoresFiscales(), 180);
 }
 let timbradoReceptorCamposOcultos = { gln_receptor: "", gln_emisor_buyer: "" };
+const PERFIL_FISCAL_PUBLICO_GENERAL = "PUBLICO_GENERAL";
+function esPerfilPublicoGeneral(receptor = {}) {
+  return String(receptor.rfc || "").trim().toUpperCase() === "XAXX010101000" && String(receptor.razon_social || receptor.nombre || "").trim().toUpperCase() === "PUBLICO EN GENERAL";
+}
+async function aplicarPerfilFiscalReceptor(perfil = "NORMAL") {
+  const publico = String(perfil || "").toUpperCase() === PERFIL_FISCAL_PUBLICO_GENERAL;
+  const empresa = document.getElementById("timb-rec-empresa")?.value || "";
+  if (publico) {
+    await cargarRegimenesReceptorFiscal(empresa, "616");
+    await cargarUsosCfdiReceptorFiscal(empresa, "S01");
+    document.getElementById("timb-rec-rs").value = "PUBLICO EN GENERAL";
+    document.getElementById("timb-rec-rfc").value = "XAXX010101000";
+    document.getElementById("timb-rec-regimen").value = "616";
+    document.getElementById("timb-rec-uso").value = "S01";
+  }
+  ["timb-rec-rs", "timb-rec-rfc", "timb-rec-regimen", "timb-rec-cp", "timb-rec-uso"].forEach((id) => {
+    const input = document.getElementById(id);
+    if (input) input.disabled = publico;
+  });
+  const ayuda = document.getElementById("timb-rec-perfil-ayuda");
+  if (ayuda) ayuda.textContent = publico
+    ? "El cliente objetivo conserva entrega y consignatario. El CFDI usa RFC XAXX010101000, régimen 616, uso S01 y el CP de expedición de la empresa."
+    : "Este receptor utiliza sus propios datos fiscales.";
+}
 const REGIMENES_FISCALES_SAT = {
   "601": "General de Ley Personas Morales",
   "603": "Personas Morales con Fines no Lucrativos",
@@ -18419,6 +19186,11 @@ async function editarReceptorFiscal(clave) {
     };
     document.getElementById("timb-rec-dias").value = data.dias_credito || "";
     document.getElementById("timb-rec-correo").value = data.correo_envio || "";
+    const perfil = document.getElementById("timb-rec-perfil");
+    if (perfil) {
+      perfil.value = esPerfilPublicoGeneral(data) ? PERFIL_FISCAL_PUBLICO_GENERAL : "NORMAL";
+      await aplicarPerfilFiscalReceptor(perfil.value);
+    }
     abrirModalReceptorFiscal(`Editar receptor fiscal: ${data.clave_receptor}`);
   } catch (e) {
     console.error(e);
@@ -18495,6 +19267,7 @@ async function guardarReceptorFiscal() {
   if (!empresa) return alert("Selecciona una empresa.");
   const datos = {
     empresa,
+    perfil_fiscal: document.getElementById("timb-rec-perfil")?.value || "NORMAL",
     clave_receptor: document.getElementById("timb-rec-clave").value,
     alias_receptor: document.getElementById("timb-rec-alias").value,
     razon_social: document.getElementById("timb-rec-rs").value,
@@ -18532,9 +19305,12 @@ async function timbradoNuevoReceptor() {
   if (!document.getElementById("timb-rec-empresa").value) return alert("Selecciona primero la empresa.");
   document.getElementById("timb-rec-form").querySelectorAll("input").forEach((i) => i.value = "");
   document.getElementById("timb-rec-pais").value = "Mexico";
+  const perfil = document.getElementById("timb-rec-perfil");
+  if (perfil) perfil.value = "NORMAL";
   timbradoReceptorCamposOcultos = { gln_receptor: "", gln_emisor_buyer: "" };
   await cargarRegimenesReceptorFiscal(document.getElementById("timb-rec-empresa").value);
   await cargarUsosCfdiReceptorFiscal(document.getElementById("timb-rec-empresa").value);
+  await aplicarPerfilFiscalReceptor("NORMAL");
   document.getElementById("timb-rec-cliente-buscar").value = "";
   document.getElementById("timb-rec-cliente-sugerencias").innerHTML = "";
   document.getElementById("timb-rec-cliente-sugerencias").classList.add("hidden");
@@ -18562,23 +19338,32 @@ async function eliminarReceptorFiscal(clave) {
 async function cargarConsignatarios() {
   const empresa = document.getElementById("timb-con-empresa").value;
   const container = document.getElementById("timb-con-list");
+  configurarPantallaConsignatarios();
   try {
     const rows = await apiJson(`/timbrado/consignatarios-clientes${empresa ? "?empresa=" + encodeURIComponent(empresa) : ""}`);
     if (!rows || rows.length === 0) {
-      container.innerHTML = '<p class="muted">No hay consignatarios registrados.</p>';
+      container.innerHTML = `<p class="muted">${esConsignatarioGourmet() ? "No hay consignatarios registrados." : "No hay clientes vinculados. Use Vincular cliente; la sucursal y dirección siempre se leen de la base de clientes."}</p>`;
       return;
     }
-    let html = '<table class="timbrado-table"><thead><tr><th>Cliente</th><th>Nombre</th><th>GLN Consignatario</th><th>Obs</th><th>Acciones</th></tr></thead><tbody>';
+    const gourmet = esConsignatarioGourmet();
+    let html = gourmet
+      ? '<table class="timbrado-table"><thead><tr><th>Cliente</th><th>Nombre</th><th>GLN Consignatario</th><th>Obs</th><th>Acciones</th></tr></thead><tbody>'
+      : '<table class="timbrado-table"><thead><tr><th>Cliente</th><th>Consignatario / sucursal</th><th>Dirección de entrega (base de clientes)</th><th>GLN opcional</th><th>Acciones</th></tr></thead><tbody>';
     rows.forEach((r) => {
-      html += `<tr>
-        <td>${escHtml(r.cliente_numero || "")}</td>
-        <td>${escHtml(r.cliente_nombre || "")}</td>
-        <td>${escHtml(r.gln_consignatario || "")}</td>
-        <td>${escHtml(r.observaciones || "")}</td>
+      html += gourmet ? `<tr>
+        <td>${escHtml(r.cliente_numero || "")}</td><td>${escHtml(r.cliente_nombre || "")}</td>
+        <td>${escHtml(r.gln_consignatario || "")}</td><td>${escHtml(r.observaciones || "")}</td>
         <td>
           <button class="timbrado-mini-btn" data-numero="${escHtml(r.cliente_numero||"")}" data-nombre="${escHtml(r.cliente_nombre||"")}" data-gln="${escHtml(r.gln_consignatario||"")}" data-obs="${escHtml(r.observaciones||"")}" onclick="editarConsignatario(this)">Editar</button>
           <button class="timbrado-mini-btn danger" onclick="eliminarConsignatario('${escHtml(r.cliente_numero)}')">Eliminar</button>
         </td>
+      </tr>` : `<tr>
+        <td>${escHtml(r.cliente_numero || "")}<br><small>${escHtml(r.cliente_nombre || "")}</small></td>
+        <td>${escHtml(r.consignatario_nombre || r.cliente_nombre || "")}</td>
+        <td>${escHtml(r.direccion_entrega || "Sin dirección de entrega capturada")}</td>
+        <td>${escHtml(r.gln_consignatario || "")}</td>
+        <td><button class="timbrado-mini-btn" data-numero="${escHtml(r.cliente_numero||"")}" data-nombre="${escHtml(r.cliente_nombre||"")}" data-gln="${escHtml(r.gln_consignatario||"")}" data-obs="${escHtml(r.observaciones||"")}" onclick="editarConsignatario(this)">Ver / editar</button>
+        <button class="timbrado-mini-btn danger" onclick="eliminarConsignatario('${escHtml(r.cliente_numero)}')">Quitar vínculo</button></td>
       </tr>`;
     });
     html += "</tbody></table>";
@@ -18586,6 +19371,74 @@ async function cargarConsignatarios() {
   } catch (e) {
     container.innerHTML = `<p class="muted">Error: ${e}</p>`;
   }
+}
+
+function esConsignatarioGourmet() {
+  const empresa = (document.getElementById("timb-con-empresa")?.value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  return empresa.includes("GOURMET ESPANA");
+}
+
+function configurarPantallaConsignatarios() {
+  const gourmet = esConsignatarioGourmet();
+  const title = document.getElementById("timb-con-title");
+  const search = document.getElementById("timb-con-search-wrap");
+  const help = document.getElementById("timb-con-base-help");
+  const numero = document.getElementById("timb-con-modal-numero");
+  const nombre = document.getElementById("timb-con-modal-nombre");
+  const sucursal = document.getElementById("timb-con-modal-sucursal");
+  const direccion = document.getElementById("timb-con-modal-direccion");
+  const glnLabel = document.getElementById("timb-con-modal-gln-label");
+  const nuevo = document.getElementById("timb-con-nuevo");
+  if (title) title.textContent = gourmet ? "GLN de Consignatarios por Cliente" : "Datos de entrega desde base de clientes";
+  if (search) search.classList.toggle("hidden", gourmet);
+  if (help) help.textContent = gourmet
+    ? "Configuración manual de GLN para las addendas de Gourmet España."
+    : "Seleccione un cliente. El consignatario y la dirección se cargan de la base comercial de clientes.";
+  if (numero) numero.readOnly = !gourmet;
+  if (nombre) nombre.readOnly = !gourmet;
+  if (sucursal) sucursal.closest("div")?.classList.toggle("hidden", gourmet);
+  if (direccion) direccion.closest("div")?.classList.toggle("hidden", gourmet);
+  if (glnLabel) glnLabel.textContent = gourmet ? "GLN Consignatario" : "GLN Consignatario (opcional)";
+  if (nuevo) nuevo.textContent = gourmet ? "Nuevo" : "Vincular cliente";
+}
+
+let _consignatarioSearchTimer = null;
+async function buscarClienteBaseConsignatario() {
+  clearTimeout(_consignatarioSearchTimer);
+  _consignatarioSearchTimer = setTimeout(async () => {
+    const empresa = document.getElementById("timb-con-empresa")?.value || "";
+    const input = document.getElementById("timb-con-modal-buscar");
+    const sugerencias = document.getElementById("timb-con-modal-sugerencias");
+    const texto = (input?.value || "").trim();
+    if (!empresa || !texto || !sugerencias) { sugerencias?.classList.add("hidden"); return; }
+    try {
+      const rows = await apiJson(`/timbrado/clientes-base?empresa=${encodeURIComponent(empresa)}&texto=${encodeURIComponent(texto)}`);
+      sugerencias.innerHTML = "";
+      (rows || []).slice(0, 20).forEach((cliente) => {
+        const boton = document.createElement("button");
+        boton.type = "button";
+        boton.className = "receptor-suggestion";
+        boton.textContent = `${cliente.numero} - ${cliente.nombre}`;
+        boton.onclick = () => cargarClienteBaseEnConsignatario(cliente.numero);
+        sugerencias.appendChild(boton);
+      });
+      sugerencias.classList.toggle("hidden", !sugerencias.children.length);
+    } catch (e) { sugerencias.classList.add("hidden"); }
+  }, 180);
+}
+
+async function cargarClienteBaseEnConsignatario(numero) {
+  const empresa = document.getElementById("timb-con-empresa")?.value || "";
+  if (!empresa || !numero) return;
+  try {
+    const cliente = await apiJson(`/timbrado/clientes-base/${encodeURIComponent(empresa)}/${encodeURIComponent(numero)}`);
+    document.getElementById("timb-con-modal-numero").value = cliente.numero || numero;
+    document.getElementById("timb-con-modal-nombre").value = cliente.nombre || "";
+    document.getElementById("timb-con-modal-sucursal").value = cliente.consignatario || cliente.nombre || "";
+    document.getElementById("timb-con-modal-direccion").value = cliente.direccion_consignatario || "";
+    document.getElementById("timb-con-modal-buscar").value = `${cliente.numero || numero} - ${cliente.nombre || ""}`;
+    document.getElementById("timb-con-modal-sugerencias").classList.add("hidden");
+  } catch (e) { alert(`No se pudo cargar el cliente: ${e.message || e}`); }
 }
 
 async function guardarConsignatario() {
@@ -18614,17 +19467,23 @@ function _mostrarModalConsignatario() {
 }
 
 function editarConsignatario(btn) {
+  configurarPantallaConsignatarios();
   document.getElementById("timb-con-modal-numero").value = btn.dataset.numero || "";
   document.getElementById("timb-con-modal-nombre").value = btn.dataset.nombre || "";
   document.getElementById("timb-con-modal-gln").value = btn.dataset.gln || "";
   document.getElementById("timb-con-modal-obs").value = btn.dataset.obs || "";
+  if (!esConsignatarioGourmet()) cargarClienteBaseEnConsignatario(btn.dataset.numero || "");
   document.getElementById("timb-cons-modal-title").textContent = "Editar Consignatario";
   _mostrarModalConsignatario();
 }
 
 function timbradoNuevoConsignatario() {
+  configurarPantallaConsignatarios();
   document.getElementById("timb-con-modal-numero").value = "";
   document.getElementById("timb-con-modal-nombre").value = "";
+  document.getElementById("timb-con-modal-buscar").value = "";
+  document.getElementById("timb-con-modal-sucursal").value = "";
+  document.getElementById("timb-con-modal-direccion").value = "";
   document.getElementById("timb-con-modal-gln").value = "";
   document.getElementById("timb-con-modal-obs").value = "";
   document.getElementById("timb-cons-modal-title").textContent = "Nuevo Consignatario";
@@ -18823,16 +19682,23 @@ async function cargarReglas() {
   const empresa = document.getElementById("timb-reg-empresa").value;
   const container = document.getElementById("timb-reg-list");
   try {
-    const rows = await apiJson(`/timbrado/reglas-redireccion${empresa ? "?empresa=" + encodeURIComponent(empresa) : ""}`);
+    const [rows, grupos] = await Promise.all([
+      apiJson(`/timbrado/reglas-redireccion${empresa ? "?empresa=" + encodeURIComponent(empresa) : ""}`),
+      empresa ? apiJson(`/timbrado/grupos-clientes?empresa=${encodeURIComponent(empresa)}`) : Promise.resolve([]),
+    ]);
+    window._timbradoGruposReglas = grupos || [];
+    cargarGruposEnRegla();
     if (!rows || rows.length === 0) {
       container.innerHTML = '<p class="muted">No hay reglas registradas.</p>';
       return;
     }
-    let html = '<table class="timbrado-table"><thead><tr><th>Prioridad</th><th>Patron</th><th>Activa</th><th>Destino PZ</th><th>Destino KG</th><th>Rec PZ</th><th>Rec KG</th><th>Observaciones</th><th>Acciones</th></tr></thead><tbody>';
+    let html = '<table class="timbrado-table"><thead><tr><th>Prioridad</th><th>Grupo / patrón</th><th>Activa</th><th>Destino PZ</th><th>Destino KG</th><th>Rec PZ</th><th>Rec KG</th><th>Observaciones</th><th>Acciones</th></tr></thead><tbody>';
     rows.forEach((r) => {
+      const grupo = (window._timbradoGruposReglas || []).find(g => Number(g.id) === Number(r.grupo_id));
+      const criterio = grupo ? `Grupo: ${grupo.nombre_grupo} (${grupo.total_clientes || 0} cliente(s))` : (r.patron_cliente || "");
       html += `<tr>
         <td>${r.prioridad || 100}</td>
-        <td>${escHtml(r.patron_cliente || "")}</td>
+        <td>${escHtml(criterio)}</td>
         <td>${r.activa ? '<span class="badge badge-success">Si</span>' : '<span class="badge badge-danger">No</span>'}</td>
         <td>${escHtml(r.cliente_destino_piezas || "")}</td>
         <td>${escHtml(r.cliente_destino_kilos || "")}</td>
@@ -18852,12 +19718,36 @@ async function cargarReglas() {
   }
 }
 
+function cargarGruposEnRegla(seleccionado = "") {
+  const select = document.getElementById("timb-reg-grupo");
+  if (!select) return;
+  const valor = String(seleccionado || select.value || "");
+  select.innerHTML = '<option value="">-- Regla individual por patrón --</option>';
+  (window._timbradoGruposReglas || []).forEach((grupo) => {
+    const opcion = document.createElement("option");
+    opcion.value = grupo.id;
+    opcion.textContent = `${grupo.nombre_grupo} (${grupo.total_clientes || 0} cliente(s))`;
+    select.appendChild(opcion);
+  });
+  select.value = valor;
+}
+
+function alCambiarGrupoRegla() {
+  const grupo = document.getElementById("timb-reg-grupo")?.value;
+  const patron = document.getElementById("timb-reg-patron");
+  if (grupo && patron) patron.value = "";
+}
+
 async function editarRegla(id) {
   const empresa = document.getElementById("timb-reg-empresa").value;
   const rows = await apiJson(`/timbrado/reglas-redireccion${empresa ? "?empresa=" + encodeURIComponent(empresa) : ""}`);
   const r = rows.find(x => x.id === id);
   if (!r) return alert("Regla no encontrada");
   document.getElementById("timb-reg-form").dataset.editId = id;
+  if (!window._timbradoGruposReglas) {
+    window._timbradoGruposReglas = await apiJson(`/timbrado/grupos-clientes?empresa=${encodeURIComponent(empresa)}`);
+  }
+  cargarGruposEnRegla(r.grupo_id || "");
   document.getElementById("timb-reg-patron").value = r.patron_cliente || "";
   document.getElementById("timb-reg-prioridad").value = r.prioridad || 100;
   document.getElementById("timb-reg-dest-pz").value = r.cliente_destino_piezas || "";
@@ -18876,6 +19766,7 @@ async function guardarReglaRedireccion() {
   const datos = {
     id: editId || undefined,
     empresa,
+    grupo_id: document.getElementById("timb-reg-grupo").value || undefined,
     patron_cliente: document.getElementById("timb-reg-patron").value,
     prioridad: parseInt(document.getElementById("timb-reg-prioridad").value) || 100,
     cliente_destino_piezas: document.getElementById("timb-reg-dest-pz").value,
@@ -18900,6 +19791,7 @@ function timbradoNuevaRegla() {
   document.getElementById("timb-reg-form").dataset.editId = "";
   document.getElementById("timb-reg-form").querySelectorAll("input").forEach((i) => { if (i.type !== "checkbox") i.value = ""; });
   document.getElementById("timb-reg-prioridad").value = "100";
+  cargarGruposEnRegla("");
   document.getElementById("timb-reg-activa").checked = true;
   document.getElementById("timb-reg-form").style.display = "block";
 }
