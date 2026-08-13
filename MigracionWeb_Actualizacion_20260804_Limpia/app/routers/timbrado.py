@@ -4336,7 +4336,7 @@ def _cancelar_facturas_internas_por_cfdi(row: dict) -> int:
         placeholders = ",".join(["%s"] * len(factura_ids))
         cur.execute(
             f"UPDATE facturas SET estatus = %s, sae_codigo = %s WHERE id IN ({placeholders})",
-            tuple(["Cancelada", ""] + list(factura_ids)),
+            tuple(["Cancelada", "CANCELADO"] + list(factura_ids)),
         )
         conn_legacy.commit()
         return cur.rowcount or 0

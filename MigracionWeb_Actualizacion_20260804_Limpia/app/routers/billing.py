@@ -731,6 +731,8 @@ def list_invoices(
                 CASE WHEN UPPER(TRIM(COALESCE(f.estatus, ''))) IN ('CANCELADO', 'CANCELADA') THEN 0 ELSE f.iva END AS iva,
                 CASE WHEN UPPER(TRIM(COALESCE(f.estatus, ''))) IN ('CANCELADO', 'CANCELADA') THEN 0 ELSE f.total END AS total,
                 CASE
+                    WHEN UPPER(TRIM(COALESCE(f.estatus, ''))) IN ('CANCELADO', 'CANCELADA')
+                    THEN 'CANCELADO'
                     WHEN COALESCE(ce.serie, '') <> '' OR COALESCE(ce.folio_cfdi, '') <> ''
                     THEN CONCAT(COALESCE(ce.serie, ''), COALESCE(ce.folio_cfdi, ''))
                     ELSE COALESCE(f.sae_codigo, '')
@@ -917,7 +919,11 @@ def export_invoices(
                 f.descuento,
                 f.iva,
                 f.total,
-                COALESCE(f.sae_codigo, '') AS sae_codigo,
+                CASE
+                    WHEN UPPER(TRIM(COALESCE(f.estatus, ''))) IN ('CANCELADO', 'CANCELADA')
+                    THEN 'CANCELADO'
+                    ELSE COALESCE(f.sae_codigo, '')
+                END AS sae_codigo,
                 COALESCE(f.observaciones_mio, '') AS observaciones_mio,
                 f.estatus,
                 -- Las facturas historicas de Gourmet pueden conservar el codigo
@@ -1093,7 +1099,7 @@ def export_invoices(
                 _clean_text(invoice.get("numero_salida")),
                 _clean_text(invoice.get("agente")),
                 _clean_text(invoice.get("vendedor")),
-                _clean_text(invoice.get("sae_codigo")),
+                "CANCELADO" if cancelada else _clean_text(invoice.get("sae_codigo")),
                 _clean_text(invoice.get("observaciones_mio")),
                 _clean_text(invoice.get("empresa")),
             ])
