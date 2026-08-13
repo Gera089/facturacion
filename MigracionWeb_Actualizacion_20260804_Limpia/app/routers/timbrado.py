@@ -88,6 +88,7 @@ from app.routers.timbrado_core import (
     obtener_config_timbrado,
     obtener_grupo_clientes_timbrado,
     obtener_receptor_fiscal,
+    actualizar_correo_receptor_fiscal,
     registrar_intento_pac,
     consolidar_facturas_timbrado,
     procesar_siguiente_timbrado,
@@ -243,6 +244,7 @@ def _asegurar_tabla_cfdi_cobranza(conn):
 def _datos_receptor_desde_xml(xml_path: str, fallback: dict) -> dict:
     ns = {"cfdi": "http://www.sat.gob.mx/cfd/4"}
     datos = {}
+    xml_path = _resolver_xml_cfdi_path(xml_path)
     if xml_path and os.path.exists(xml_path):
         try:
             root = ET.parse(xml_path).getroot()
@@ -257,6 +259,98 @@ def _datos_receptor_desde_xml(xml_path: str, fallback: dict) -> dict:
         "cp": datos.get("DomicilioFiscalReceptor") or fallback.get("domicilio_fiscal") or "",
         "regimen": datos.get("RegimenFiscalReceptor") or fallback.get("regimen_fiscal") or "601",
     }
+
+
+def _resolver_xml_cfdi_path(xml_path: str) -> str:
+    """Resuelve rutas de XML guardadas en otra copia/disco del proyecto."""
+    path = str(xml_path or "").strip()
+    if not path:
+        return ""
+    if os.path.exists(path):
+        return path
+    marcador = f"{os.sep}storage{os.sep}cfdi{os.sep}"
+    normalizado = path.replace("/", os.sep)
+    idx = normalizado.lower().find(marcador.lower())
+    if idx >= 0:
+        relativo = normalizado[idx + 1:]
+        candidato = Path(__file__).resolve().parents[2] / relativo
+        if candidato.exists():
+            return str(candidato)
+    return path
+
+
+def _completar_fiscal_desde_factura_legacy(cur, fiscal: dict, app: dict, recibo: dict | None = None) -> dict:
+    fiscal = dict(fiscal or {})
+    factura_id = int(app.get("factura_id") or fiscal.get("factura_id") or 0)
+    if factura_id <= 0:
+        return fiscal
+    try:
+        cur.execute("SELECT * FROM facturas WHERE id = %s LIMIT 1", (factura_id,))
+        factura = cur.fetchone() or {}
+    except Exception:
+        factura = {}
+    if factura:
+        fiscal.setdefault("total", factura.get("total") or 0)
+        fiscal.setdefault("monto_total", factura.get("total") or 0)
+        fiscal.setdefault("factura", factura.get("factura") or app.get("factura") or "")
+        fiscal.setdefault("empresa", factura.get("empresa") or (recibo or {}).get("empresa") or "")
+        fiscal.setdefault("cliente_receptor_numero", factura.get("numero_cliente") or (recibo or {}).get("numero_cliente") or "")
+        fiscal.setdefault("cliente_receptor_nombre", factura.get("cliente_nombre") or "")
+    if fiscal.get("xml_path"):
+        fiscal["xml_path"] = _resolver_xml_cfdi_path(fiscal.get("xml_path"))
+    if fiscal.get("rfc") and fiscal.get("domicilio_fiscal"):
+        return fiscal
+    numero_cliente = str(fiscal.get("cliente_receptor_numero") or (recibo or {}).get("numero_cliente") or "").strip()
+    empresa = _normalizar_empresa(fiscal.get("empresa") or (recibo or {}).get("empresa") or "")
+    if numero_cliente and empresa:
+        try:
+            cur.execute(
+                "SELECT * FROM clientes WHERE TRIM(CAST(numero AS CHAR)) = %s AND UPPER(TRIM(empresa)) = %s LIMIT 1",
+                (numero_cliente, empresa),
+            )
+            cliente = cur.fetchone() or {}
+        except Exception:
+            cliente = {}
+        if cliente:
+            fiscal.setdefault("rfc", str(cliente.get("rfc") or "").strip())
+            fiscal.setdefault("cliente_receptor_nombre", str(cliente.get("nombre") or fiscal.get("cliente_receptor_nombre") or "").strip())
+            fiscal.setdefault("domicilio_fiscal", str(cliente.get("codigo_postal") or cliente.get("cp") or "").strip())
+            fiscal.setdefault("regimen_fiscal", str(cliente.get("regimen_fiscal") or cliente.get("regimen") or "").strip())
+    return fiscal
+
+
+def _buscar_cfdi_emitido_cobranza(conn, factura_id: int, app: dict, recibo: dict | None = None, incluir_no_timbrada: bool = False) -> dict:
+    estatus_sql = "" if incluir_no_timbrada else " AND estatus_cfdi = 'TIMBRADA'"
+    if factura_id > 0:
+        row = conn.execute(
+            f"SELECT * FROM cfdi_emitidos WHERE factura_id = ?{estatus_sql} LIMIT 1",
+            (factura_id,),
+        ).fetchone()
+        if row:
+            return dict(row)
+    empresa = _normalizar_empresa((recibo or {}).get("empresa") or app.get("empresa") or "")
+    factura = str(app.get("factura") or "").strip()
+    if not factura:
+        return {}
+    candidatos = [factura]
+    limpio = re.sub(r"^[A-Za-z]+0*", "", factura)
+    if limpio and limpio not in candidatos:
+        candidatos.append(limpio)
+    for candidato in candidatos:
+        row = conn.execute(
+            f"""
+            SELECT * FROM cfdi_emitidos
+            WHERE UPPER(TRIM(empresa)) = UPPER(TRIM(?))
+              AND (UPPER(TRIM(factura)) = UPPER(TRIM(?)) OR UPPER(TRIM(folio_cfdi)) = UPPER(TRIM(?)))
+              {estatus_sql}
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (empresa, candidato, candidato),
+        ).fetchone()
+        if row:
+            return dict(row)
+    return {}
 
 
 def _asegurar_tabla_cuentas_cobranza_mysql(cur):
@@ -321,6 +415,7 @@ def _cuentas_bancarias_cobranza(cur, recibo: dict) -> dict:
 
 def _extraer_datos_rep_factura(xml_path: str, pago_aplicado: Decimal) -> dict:
     datos = {"serie": "", "folio": "", "traslados": []}
+    xml_path = _resolver_xml_cfdi_path(xml_path)
     if not xml_path or not os.path.exists(xml_path):
         return datos
     try:
@@ -545,7 +640,7 @@ def _saldo_inicial_fiscal_desde_app(cur, app: dict) -> dict:
 
 def _total_cfdi_desde_fiscal(fiscal: dict) -> Decimal:
     try:
-        xml_path = str(fiscal.get("xml_path") or "")
+        xml_path = _resolver_xml_cfdi_path(str(fiscal.get("xml_path") or ""))
         if xml_path and os.path.exists(xml_path):
             root = ET.parse(xml_path).getroot()
             return _money(root.attrib.get("Total"))
@@ -595,11 +690,8 @@ def _validar_pre_cfdi_cobranza(conn, cur, recibo: dict, aplicaciones: list[dict]
                 falta(f"aplicaciones[{idx}].uuid", f"El saldo inicial {app.get('factura') or factura_id} necesita XML/UUID fiscal para emitir {tipo.replace('_', ' ').lower()}.")
                 continue
         elif factura_id > 0:
-            row = conn.execute(
-                "SELECT * FROM cfdi_emitidos WHERE factura_id = ? AND estatus_cfdi = 'TIMBRADA' LIMIT 1",
-                (factura_id,),
-            ).fetchone()
-            fiscal = dict(row) if row else {}
+            fiscal = _buscar_cfdi_emitido_cobranza(conn, factura_id, app, recibo)
+            fiscal = _completar_fiscal_desde_factura_legacy(cur, fiscal, app, recibo)
         if not fiscal.get("uuid") and not interno:
             falta(f"aplicaciones[{idx}].uuid", f"La factura {app.get('factura') or factura_id} debe estar timbrada antes de emitir {tipo.replace('_', ' ').lower()}.")
             continue
@@ -650,18 +742,16 @@ def _preparar_facturas_cobranza_cfdi(conn, cur, recibo: dict, aplicaciones: list
                     detail=f"El saldo inicial {app.get('factura') or app.get('factura_id')} necesita XML/UUID fiscal para emitir el CFDI de cobranza.",
                 )
         elif not es_interno:
-            fiscal = conn.execute(
-                "SELECT * FROM cfdi_emitidos WHERE factura_id = ? AND estatus_cfdi = 'TIMBRADA' LIMIT 1",
-                (factura_id,),
-            ).fetchone()
+            fiscal = _buscar_cfdi_emitido_cobranza(conn, factura_id, app, recibo)
             if not fiscal or not dict(fiscal).get("uuid"):
                 raise HTTPException(
                     status_code=400,
                     detail=f"La factura {app.get('factura') or app.get('factura_id')} debe estar timbrada antes de emitir el CFDI de cobranza.",
                 )
         else:
-            fiscal = conn.execute("SELECT * FROM cfdi_emitidos WHERE factura_id = ? LIMIT 1", (factura_id,)).fetchone()
+            fiscal = _buscar_cfdi_emitido_cobranza(conn, factura_id, app, recibo, incluir_no_timbrada=True)
         fiscal = dict(fiscal) if fiscal and not isinstance(fiscal, dict) else (fiscal or {})
+        fiscal = _completar_fiscal_desde_factura_legacy(cur, fiscal, app, recibo)
         if not fiscal.get("xml_path") and es_interno:
             num_cli = str(app.get("numero_cliente") or recibo.get("numero_cliente") or "").strip()
             emp_cli = _normalizar_empresa(app.get("empresa") or recibo.get("empresa") or "")
@@ -2301,6 +2391,13 @@ def actualizar_receptor_fiscal(datos: dict):
     return {"mensaje": "Receptor fiscal guardado correctamente."}
 
 
+@router.patch("/receptores-fiscales/{empresa}/{clave_receptor}/correo")
+def actualizar_correo_receptor_fiscal_endpoint(empresa: str, clave_receptor: str, datos: dict):
+    with get_timbrado_connection() as conn:
+        actualizar_correo_receptor_fiscal(conn, empresa, clave_receptor, (datos or {}).get("correo_envio"))
+    return {"mensaje": "Correo del receptor fiscal actualizado correctamente."}
+
+
 @router.post("/receptores-fiscales/importar")
 def importar_receptores_fiscales_archivo(datos: dict):
     empresa = _normalizar_empresa((datos or {}).get("empresa"))
@@ -2398,7 +2495,58 @@ def actualizar_catalogo_sat_unidades(datos: dict):
 @router.get("/consignatarios-clientes")
 def ver_consignatarios_clientes(empresa: str | None = None):
     with get_timbrado_connection() as conn:
-        return listar_consignatarios_clientes(conn, empresa=empresa)
+        rows = listar_consignatarios_clientes(conn, empresa=empresa)
+    # Gourmet España conserva su catálogo manual de GLN para addendas. Para las
+    # demás empresas el domicilio de entrega vive en la tabla comercial clientes.
+    if _texto_empresa_cmp(empresa or "") == _texto_empresa_cmp("Gourmet España"):
+        return rows
+    resultado = []
+    for row in rows:
+        cliente = _obtener_cliente_base_completo(row.get("empresa"), row.get("cliente_numero")) or {}
+        resultado.append({
+            **row,
+            "cliente_nombre": cliente.get("nombre") or row.get("cliente_nombre") or "",
+            "consignatario_nombre": cliente.get("consignatario") or cliente.get("nombre") or "",
+            "direccion_entrega": _direccion_cliente_consignatario(cliente),
+        })
+    return resultado
+
+
+def _direccion_cliente_consignatario(cliente: dict) -> str:
+    """Arma una dirección de entrega legible sin alterar la ficha comercial."""
+    def valor(campo):
+        texto = str(cliente.get(campo) or "").strip()
+        return "" if texto in {"-", "N/A", "NA"} else texto
+    partes = [
+        " ".join(valor(k) for k in ("consig_calle", "consig_no_exterior", "consig_no_interior") if valor(k)),
+        valor("consig_colonia"),
+        valor("consig_delegacion") or valor("consig_municipio"),
+        " ".join(valor(k) for k in ("consig_poblacion", "consig_codigo_postal", "consig_estado") if valor(k)),
+        valor("consig_pais"),
+    ]
+    return ", ".join(p for p in partes if p)
+
+
+def _obtener_cliente_base_completo(empresa: str, cliente_numero: str) -> dict:
+    """Obtiene la ficha comercial, incluida la sucursal/consignatario."""
+    conn = get_legacy_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        empresa_norm = _texto_empresa_cmp(empresa)
+        numero_norm = str(cliente_numero or "").strip().replace(",", "")
+        cur.execute(
+            "SELECT * FROM clientes WHERE REPLACE(CAST(numero AS CHAR), ',', '') = %s ORDER BY id DESC",
+            (numero_norm,),
+        )
+        for row in cur.fetchall() or []:
+            if _texto_empresa_cmp(row.get("empresa") or "") == empresa_norm:
+                data = dict(row)
+                data["numero"] = str(data.get("numero") or "").strip()
+                return data
+        return {}
+    finally:
+        cur.close()
+        conn.close()
 
 
 @router.get("/clientes-base")
@@ -2468,7 +2616,10 @@ def obtener_cliente_base_fiscal(empresa: str, cliente_numero: str):
             SELECT CAST(numero AS CHAR) AS numero, nombre, empresa, razon_social, rfc,
                    codigo_postal, calle, no_exterior, no_interior, colonia,
                    COALESCE(municipio, alcaldia, '') AS municipio, estado, pais,
-                   correo_electronico, dias_credito
+                   correo_electronico, dias_credito, consignatario,
+                   consig_calle, consig_no_exterior, consig_no_interior, consig_colonia,
+                   consig_municipio, consig_delegacion, consig_codigo_postal,
+                   consig_poblacion, consig_estado, consig_pais
             FROM clientes
             WHERE REPLACE(CAST(numero AS CHAR), ',', '') = %s
             ORDER BY id DESC
@@ -2479,6 +2630,7 @@ def obtener_cliente_base_fiscal(empresa: str, cliente_numero: str):
             if _texto_empresa_cmp(row.get("empresa") or "") == empresa_norm:
                 data = dict(row)
                 data["numero"] = str(data.get("numero") or "").strip()
+                data["direccion_consignatario"] = _direccion_cliente_consignatario(data)
                 return data
         raise HTTPException(status_code=404, detail="No se encontró el cliente en la empresa seleccionada.")
     finally:
@@ -2490,13 +2642,22 @@ def obtener_cliente_base_fiscal(empresa: str, cliente_numero: str):
 def ver_consignatario_cliente(empresa: str, cliente_numero: str):
     with get_timbrado_connection() as conn:
         data = obtener_consignatario_cliente(conn, empresa, cliente_numero)
-    return data or {
+    respuesta = data or {
         "empresa": _normalizar_empresa(empresa),
         "cliente_numero": str(cliente_numero or "").strip(),
         "cliente_nombre": "",
         "gln_consignatario": "",
         "observaciones": "",
     }
+    if _texto_empresa_cmp(empresa) != _texto_empresa_cmp("Gourmet España"):
+        cliente = _obtener_cliente_base_completo(empresa, cliente_numero)
+        if cliente:
+            respuesta.update({
+                "cliente_nombre": cliente.get("nombre") or respuesta.get("cliente_nombre") or "",
+                "consignatario_nombre": cliente.get("consignatario") or cliente.get("nombre") or "",
+                "direccion_entrega": _direccion_cliente_consignatario(cliente),
+            })
+    return respuesta
 
 
 @router.put("/consignatarios-clientes")
@@ -4780,6 +4941,12 @@ def enviar_correo_cfdi_emitido(folio: str, datos: dict):
         raise HTTPException(status_code=400, detail="Indica al menos un correo destino valido.")
     with get_timbrado_connection() as conn:
         row = _buscar_cfdi_emitido_por_folio(conn, folio)
+        xml_registrado = str(row.get("xml_path") or "").strip()
+        xml_recuperado = _resolver_xml_cfdi_en_instalacion(row)
+        if xml_recuperado and xml_recuperado != xml_registrado and os.path.isfile(xml_recuperado):
+            tabla = "cfdi_cobranza_emitidos" if row.get("origen_cfdi") == "COBRANZA" else "cfdi_emitidos"
+            conn.execute("UPDATE " + tabla + " SET xml_path = ? WHERE id = ?", (xml_recuperado, row["id"]))
+            row["xml_path"] = xml_recuperado
         cfg = _obtener_correo_documento(conn, "factura_fiscal", row.get("empresa"))
     if not cfg:
         raise HTTPException(status_code=400, detail="No hay cuenta activa configurada para factura fiscal.")
@@ -4787,7 +4954,10 @@ def enviar_correo_cfdi_emitido(folio: str, datos: dict):
     folio_serie = _folio_serie(row) or str(row.get("factura") or folio)
     xml_path = str(row.get("xml_path") or "").strip()
     if not xml_path or not os.path.exists(xml_path):
-        raise HTTPException(status_code=404, detail="No se encontro el XML del CFDI.")
+        raise HTTPException(
+            status_code=404,
+            detail="No se encontró el XML timbrado en el servidor. El CFDI ya puede estar timbrado, pero requiere restaurar su XML para enviarlo por correo.",
+        )
     with open(xml_path, "rb") as fh:
         xml_bytes = fh.read()
     pdf_bytes = _generar_pdf_cfdi_bytes(row)
