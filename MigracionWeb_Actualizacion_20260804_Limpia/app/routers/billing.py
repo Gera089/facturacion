@@ -72,12 +72,18 @@ class BillingLine(BaseModel):
     cip: str = ""
     descripcion: str = ""
     cantidad: float = 0
-    piezas: int = 0
+    # Algunos artículos se venden por fracción de pieza (por ejemplo 0.5).
+    # Debe conservarse como decimal desde la captura hasta el CFDI.
+    piezas: float = 0
     precio: float = 0
     precio_base: float = 0
     precio_otro: float = 0
     rebanado: str = ""
     importe: float = 0
+    # Se guardan en la partida y no solamente en el encabezado. Esto conserva
+    # el descuento original aunque después cambie el catálogo de productos.
+    descuento_pct: float = 0
+    descuento_importe: float = 0
 
 
 class BillingCreate(BaseModel):
@@ -102,6 +108,10 @@ class BillingCreate(BaseModel):
     productos: list[BillingLine] = Field(default_factory=list)
 
 
+class BillingObservacionesUpdate(BaseModel):
+    observaciones: str = ""
+
+
 def _dict_rows(cursor):
     columns = [col[0] for col in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -109,7 +119,35 @@ def _dict_rows(cursor):
 
 def _table_columns(cursor, table: str) -> set[str]:
     cursor.execute(f"SHOW COLUMNS FROM {table}")
-    return {str(row[0]) for row in cursor.fetchall()}
+    columns = set()
+    for row in cursor.fetchall():
+        if isinstance(row, dict):
+            columns.add(str(row.get("Field") or row.get("field") or ""))
+        else:
+            columns.add(str(row[0]))
+    return {name for name in columns if name}
+
+
+def _ensure_invoice_detail_discount_columns(cursor) -> set[str]:
+    """Asegura el histórico de descuento por partida en la base legado."""
+    columns = _table_columns(cursor, "factura_detalle")
+    definitions = {
+        "descuento_pct": "DECIMAL(12,4) NOT NULL DEFAULT 0",
+        "descuento_importe": "DECIMAL(14,4) NOT NULL DEFAULT 0",
+    }
+    for name, definition in definitions.items():
+        if name not in columns:
+            cursor.execute(f"ALTER TABLE factura_detalle ADD COLUMN {name} {definition}")
+            columns.add(name)
+    return columns
+
+
+def _ensure_invoice_observaciones_column(cursor) -> set[str]:
+    columns = _table_columns(cursor, "facturas")
+    if "observaciones_mio" not in columns:
+        cursor.execute("ALTER TABLE facturas ADD COLUMN observaciones_mio TEXT NULL")
+        columns.add("observaciones_mio")
+    return columns
 
 
 def _insert_dynamic(cursor, table: str, columns: set[str], payload: dict):
@@ -565,7 +603,7 @@ def create_invoice(payload: BillingCreate, user=Depends(require_user)):
             raise HTTPException(status_code=409, detail=f"El folio {factura_numero} ya existe.")
 
         facturas_columns = _table_columns(cursor, "facturas")
-        detalle_columns = _table_columns(cursor, "factura_detalle")
+        detalle_columns = _ensure_invoice_detail_discount_columns(cursor)
         now_value = datetime.now()
         fecha_value = datetime.combine(payload.fecha, now_value.time()) if payload.fecha else now_value
         consignatario = payload.consignatario.strip() or payload.cliente_nombre.strip()
@@ -618,6 +656,8 @@ def create_invoice(payload: BillingCreate, user=Depends(require_user)):
                 "precio_otro": row.precio_otro,
                 "rebanado": row.rebanado.strip(),
                 "importe": row.importe,
+                "descuento_pct": row.descuento_pct,
+                "descuento_importe": row.descuento_importe,
             }
             _insert_dynamic(cursor, "factura_detalle", detalle_columns, detail_payload)
 
@@ -671,6 +711,7 @@ def list_invoices(
     try:
         conn = get_legacy_connection()
         cursor = conn.cursor()
+        _ensure_invoice_observaciones_column(cursor)
         where, params = _invoice_where(company, q, date_from, date_to, month, year)
         sql = """
             SELECT
@@ -701,7 +742,8 @@ def list_invoices(
                 COALESCE(ce.estatus_cfdi, '') AS estatus_cfdi,
                 COALESCE(ce.factura, '') AS factura_cfdi_emitida,
                 COALESCE(ce.serie, '') AS serie_cfdi_emitida,
-                COALESCE(ce.folio_cfdi, '') AS folio_cfdi_emitido
+                COALESCE(ce.folio_cfdi, '') AS folio_cfdi_emitido,
+                COALESCE(f.observaciones_mio, '') AS observaciones_mio
             FROM facturas f
             LEFT JOIN clientes c
               ON TRIM(CAST(c.numero AS CHAR)) = TRIM(COALESCE(f.numero_cliente, ''))
@@ -858,6 +900,7 @@ def export_invoices(
     try:
         conn = get_legacy_connection()
         cursor = conn.cursor(dictionary=True)
+        _ensure_invoice_observaciones_column(cursor)
         where, params = _invoice_where(company, q, date_from, date_to, month, year)
         sql = """
             SELECT
@@ -875,15 +918,33 @@ def export_invoices(
                 f.iva,
                 f.total,
                 COALESCE(f.sae_codigo, '') AS sae_codigo,
+                COALESCE(f.observaciones_mio, '') AS observaciones_mio,
                 f.estatus,
-                COALESCE(c.tipo, '') AS tipo,
+                -- Las facturas historicas de Gourmet pueden conservar el codigo
+                -- GOURMET_ESPANA mientras que el catalogo usa Gourmet España.
+                -- Primero usamos el cliente de la empresa correspondiente y, si
+                -- falta su tipo, recuperamos el tipo comercial compartido. El 0
+                -- evita celdas vacias en la exportacion de Mío.
+                COALESCE(NULLIF(TRIM(c.tipo), ''), NULLIF(TRIM(c_eza.tipo), ''), NULLIF(TRIM(c_ibe.tipo), ''), '0') AS tipo,
                 COALESCE(c.agente, '') AS agente,
                 COALESCE(c.vendedor, '') AS vendedor
             FROM facturas f
             LEFT JOIN clientes c
               ON TRIM(CAST(c.numero AS CHAR)) = TRIM(COALESCE(f.numero_cliente, ''))
-             AND UPPER(TRIM(c.empresa) COLLATE utf8mb4_unicode_ci) =
-                 UPPER(TRIM(f.empresa) COLLATE utf8mb4_unicode_ci)
+             AND (
+                    UPPER(TRIM(c.empresa) COLLATE utf8mb4_unicode_ci) =
+                    UPPER(TRIM(f.empresa) COLLATE utf8mb4_unicode_ci)
+                    OR (
+                        UPPER(TRIM(f.empresa) COLLATE utf8mb4_unicode_ci) LIKE 'GOURMET%'
+                        AND UPPER(TRIM(c.empresa) COLLATE utf8mb4_unicode_ci) LIKE 'GOURMET%'
+                    )
+                 )
+            LEFT JOIN clientes c_eza
+              ON TRIM(CAST(c_eza.numero AS CHAR)) = TRIM(COALESCE(f.numero_cliente, ''))
+             AND UPPER(TRIM(c_eza.empresa) COLLATE utf8mb4_unicode_ci) = 'EZA2007'
+            LEFT JOIN clientes c_ibe
+              ON TRIM(CAST(c_ibe.numero AS CHAR)) = TRIM(COALESCE(f.numero_cliente, ''))
+             AND UPPER(TRIM(c_ibe.empresa) COLLATE utf8mb4_unicode_ci) = 'IBERSUR'
         """
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -1016,7 +1077,7 @@ def export_invoices(
             ws.column_dimensions[_colnum_to_colname(col)].width = 3
 
         ws_mio = wb.create_sheet("Mio")
-        ws_mio.append(["Factura", "Día", "Mes", "Cliente", "Importe", "Tienda", "Tipo", "N° Salida", "Agente", "Vendedor", "SAE", "Empresa"])
+        ws_mio.append(["Factura", "Día", "Mes", "Cliente", "Importe", "Tienda", "Tipo", "N° Salida", "Agente", "Vendedor", "SAE", "Observaciones", "Empresa"])
         for invoice in invoices:
             fecha = invoice.get("fecha") or datetime.now()
             if not isinstance(fecha, datetime):
@@ -1033,6 +1094,7 @@ def export_invoices(
                 _clean_text(invoice.get("agente")),
                 _clean_text(invoice.get("vendedor")),
                 _clean_text(invoice.get("sae_codigo")),
+                _clean_text(invoice.get("observaciones_mio")),
                 _clean_text(invoice.get("empresa")),
             ])
 
@@ -1120,6 +1182,8 @@ def get_invoice(invoice_id: int, user=Depends(require_user)):
                 d.precio_otro,
                 d.rebanado,
                 d.importe,
+                COALESCE(d.descuento_pct, 0) AS descuento_pct,
+                COALESCE(d.descuento_importe, 0) AS descuento_importe,
                 COALESCE(p.unidad, 'PZA') AS unidad,
                 COALESCE(p.iva, 'No') AS iva,
                 COALESCE(p.codigo_barras, '') AS codigo_barras,
@@ -1188,7 +1252,7 @@ def update_invoice(invoice_id: int, payload: BillingCreate, user=Depends(require
             raise HTTPException(status_code=409, detail=f"El folio {payload.factura.strip()} ya existe.")
 
         facturas_columns = _table_columns(cursor, "facturas")
-        detalle_columns = _table_columns(cursor, "factura_detalle")
+        detalle_columns = _ensure_invoice_detail_discount_columns(cursor)
         existing_fecha = existing_row[1] if len(existing_row) > 1 else None
         existing_comanda = str(existing_row[2] or "").strip() if len(existing_row) > 2 else ""
         existing_numero_salida = str(existing_row[3] or "").strip() if len(existing_row) > 3 else ""
@@ -1239,11 +1303,49 @@ def update_invoice(invoice_id: int, payload: BillingCreate, user=Depends(require
                 "precio_otro": row.precio_otro,
                 "rebanado": row.rebanado.strip(),
                 "importe": row.importe,
+                "descuento_pct": row.descuento_pct,
+                "descuento_importe": row.descuento_importe,
             }
             _insert_dynamic(cursor, "factura_detalle", detalle_columns, detail_payload)
 
         conn.commit()
         return {"id": invoice_id, "folio": payload.factura.strip(), "detail_count": len(detail), "total": payload.total}
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as exc:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+@router.put("/{invoice_id}/observaciones")
+def update_invoice_observaciones(invoice_id: int, payload: BillingObservacionesUpdate, user=Depends(require_user)):
+    conn = None
+    cursor = None
+    try:
+        conn = get_legacy_connection()
+        cursor = conn.cursor()
+        _ensure_invoice_observaciones_column(cursor)
+        observaciones = (payload.observaciones or "").strip()
+        if len(observaciones) > 2000:
+            observaciones = observaciones[:2000]
+        cursor.execute(
+            "UPDATE facturas SET observaciones_mio=%s WHERE id=%s",
+            (observaciones, invoice_id),
+        )
+        if cursor.rowcount == 0:
+            cursor.execute("SELECT id FROM facturas WHERE id=%s LIMIT 1", (invoice_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="Factura no encontrada.")
+        conn.commit()
+        return {"ok": True, "id": invoice_id, "observaciones_mio": observaciones}
     except HTTPException:
         if conn:
             conn.rollback()

@@ -2298,7 +2298,7 @@ table {
 }
 
 #billing-table {
-  min-width: 980px;
+  min-width: 1180px;
 }
 
 #billing-table th {
@@ -2316,6 +2316,36 @@ table {
 #billing-table tbody tr.billing-row-cancelled td.money-cell {
   color: #d11f2a;
   font-weight: 700;
+}
+
+.mio-observaciones-input {
+  width: min(260px, 28vw);
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #0f172a;
+  padding: 0 9px;
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+}
+
+.mio-observaciones-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
+}
+
+.mio-observaciones-input.is-saving {
+  background: #eff6ff;
+}
+
+.mio-observaciones-input.is-saved {
+  border-color: #10b981;
+}
+
+.mio-observaciones-input.is-error {
+  border-color: #ef4444;
 }
 
 .billing-actions-bar {
@@ -5880,3 +5910,145 @@ table tbody tr.selected {
 #view-comandas .cmd-reporte-entrega-modal .cmd-footer-actions { flex:0 0 auto; margin-top:10px; }
 @media print { body * { visibility:hidden !important; } #cmd-comanda-preview-modal, #cmd-comanda-preview-modal * { visibility:visible !important; } #cmd-comanda-preview-modal { position:absolute !important; inset:0 !important; background:#fff !important; } #cmd-comanda-preview-modal .cmd-dialog-card { width:100% !important; max-height:none !important; border:0 !important; box-shadow:none !important; padding:0 !important; } #cmd-comanda-preview-modal h3, #cmd-comanda-preview-modal .cmd-footer-actions { display:none !important; } body .cmd-preview-paper { border:0 !important; padding:0 !important; } body .cmd-preview-paper pre { font-size:10pt !important; } }
 #view-comandas .cmd-dialog-card h3 { margin:0 0 10px; font-size:16px; }
+
+/* Flujo de Promotoría: catálogos y asignación, sin capturas libres. */
+#view-promotoria .promotoria-assignment-card { display:grid; grid-template-columns:minmax(250px, 29%) minmax(0, 71%); gap:10px; align-items:center; padding:8px 12px; border:1px solid #d4e0ec; border-radius:10px; background:#f8fbff; }
+#view-promotoria .promotoria-assignment-card h4 { margin:3px 0 6px; color:#173f68; font-size:18px; }
+#view-promotoria .promotoria-assignment-card p { margin:0; }
+#view-promotoria .promotoria-assignment-form { display:grid; grid-template-columns:minmax(185px, 1.1fr) minmax(315px, 2fr) minmax(155px, .9fr) auto; align-items:end; gap:7px; }
+#view-promotoria .promotoria-assignment-form label { display:flex; flex-direction:column; gap:5px; color:#344b65; font-size:12px; font-weight:800; }
+#view-promotoria .promotoria-assignment-form select { min-height:38px; border:1px solid #bfcfe1; border-radius:7px; padding:7px 9px; background:#fff; color:#18314d; }
+#view-promotoria .promotoria-assignment-form button { min-height:38px; white-space:nowrap; }
+#view-promotoria .promotoria-assignment-title { display:grid; grid-template-columns:auto 1fr; grid-template-rows:auto auto; column-gap:7px; row-gap:2px; min-width:0; }
+#view-promotoria .promotoria-assignment-title .section-kicker { grid-column:1; grid-row:1; margin:0; font-size:9px; letter-spacing:.08em; white-space:nowrap; }
+#view-promotoria .promotoria-assignment-title b { grid-column:2; grid-row:1; min-width:0; color:#173f68; font-size:14px; white-space:nowrap; }
+#view-promotoria .promotoria-assignment-title small { grid-column:2; grid-row:2; min-width:0; color:#315d8b; font-size:clamp(10px, .72vw, 12px); font-weight:700; white-space:normal; overflow:hidden; overflow-wrap:anywhere; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-height:1.18; }
+#view-promotoria .promotoria-assignment-form label { font-size:11px; }
+#view-promotoria .promotoria-assignment-form select, #view-promotoria .promotoria-assignment-form button { min-height:34px; height:34px; padding-top:5px; padding-bottom:5px; }
+#view-promotoria .promotoria-table-title { margin-top:16px; padding:9px 12px; border:1px solid #d4e0ec; border-bottom:0; border-radius:8px 8px 0 0; background:#eaf3fc; color:#135795; font-weight:800; }
+#view-promotoria .promotoria-report-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+#view-promotoria .promotoria-report-head span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#view-promotoria .promotoria-report-head .mio-action { flex:0 0 auto; min-height:32px; padding:7px 13px; font-size:12px; }
+#view-promotoria .promotoria-admin-table, #view-promotoria .promotoria-objectives-table, #view-promotoria .promotoria-commission-table, #view-promotoria .promotoria-percent-table, #view-promotoria .promotoria-pending-table, #view-promotoria .promotoria-diagnostic-table { max-height:calc(100vh - 395px); min-height:280px; }
+#view-promotoria .promotoria-admin-table thead th, #view-promotoria .promotoria-objectives-table thead th, #view-promotoria .promotoria-commission-table thead th, #view-promotoria .promotoria-percent-table thead th, #view-promotoria .promotoria-pending-table thead th, #view-promotoria .promotoria-diagnostic-table thead th { position:sticky; top:0; z-index:2; }
+#view-promotoria .promotoria-objectives-table table { width:100%; min-width:1180px; table-layout:fixed; }
+#view-promotoria .promotoria-objectives-table th,
+#view-promotoria .promotoria-objectives-table td { padding-left:8px; padding-right:8px; }
+#view-promotoria .promotoria-objectives-table th:nth-child(1),
+#view-promotoria .promotoria-objectives-table td:nth-child(1) { width:90px; }
+#view-promotoria .promotoria-objectives-table th:nth-child(2),
+#view-promotoria .promotoria-objectives-table td:nth-child(2) { width:145px; }
+#view-promotoria .promotoria-objectives-table th:nth-child(3),
+#view-promotoria .promotoria-objectives-table td:nth-child(3) { width:260px; }
+#view-promotoria .promotoria-objectives-table th:nth-child(n+4),
+#view-promotoria .promotoria-objectives-table td:nth-child(n+4) { width:105px; text-align:right; white-space:nowrap; }
+#view-promotoria .promotoria-objectives-table th:nth-child(3),
+#view-promotoria .promotoria-objectives-table td:nth-child(3) { white-space:normal; overflow-wrap:anywhere; }
+#view-promotoria .promotoria-objectives-table th small { display:block; margin-top:2px; color:#5f7288; font-size:10px; line-height:1.15; }
+#view-promotoria .promotoria-commission-table table { width:100%; min-width:980px; table-layout:fixed; }
+#view-promotoria .promotoria-commission-table th,
+#view-promotoria .promotoria-commission-table td { padding-left:8px; padding-right:8px; }
+#view-promotoria .promotoria-commission-table th:nth-child(1),
+#view-promotoria .promotoria-commission-table td:nth-child(1) { width:95px; }
+#view-promotoria .promotoria-commission-table th:nth-child(2),
+#view-promotoria .promotoria-commission-table td:nth-child(2) { width:150px; }
+#view-promotoria .promotoria-commission-table th:nth-child(3),
+#view-promotoria .promotoria-commission-table td:nth-child(3) { width:300px; white-space:normal; overflow-wrap:anywhere; }
+#view-promotoria .promotoria-commission-table th:nth-child(n+4),
+#view-promotoria .promotoria-commission-table td:nth-child(n+4) { width:120px; text-align:right; white-space:nowrap; }
+#view-promotoria .promotoria-commission-table th:nth-child(6),
+#view-promotoria .promotoria-commission-table td:nth-child(6) { text-align:center; }
+#view-promotoria .promotoria-commission-badge { display:inline-flex; min-width:72px; justify-content:center; border-radius:999px; padding:4px 9px; background:#edf2f7; color:#53657a; font-weight:800; }
+#view-promotoria .promotoria-commission-badge.is-hit { background:#e6f7ed; color:#0d7a42; }
+#view-promotoria .promotoria-commission-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+#view-promotoria .promotoria-commission-head label { display:flex; align-items:center; gap:8px; color:#34506c; font-size:12px; font-weight:900; }
+#view-promotoria .promotoria-commission-head select { min-width:135px; height:34px; border:1px solid #bfcfe1; border-radius:7px; padding:5px 9px; background:#fff; color:#18314d; font-weight:800; }
+#view-promotoria .promotoria-percent-table { max-width:760px; min-height:0; }
+#view-promotoria .promotoria-percent-table table { width:100%; table-layout:fixed; }
+#view-promotoria .promotoria-percent-table input[type="number"] { width:100%; height:36px; border:1px solid #c7d6e6; border-radius:6px; padding:6px 10px; box-sizing:border-box; text-align:right; font-weight:800; }
+#view-promotoria .promotoria-percent-actions { display:flex; justify-content:flex-start; margin-top:12px; }
+#view-promotoria .promotoria-objective-filters { display:grid; grid-template-columns:minmax(250px, .9fr) minmax(280px, .95fr) minmax(250px, .9fr) minmax(480px, 2.4fr); gap:10px; align-items:start; margin:4px 0 12px; }
+#view-promotoria .promotoria-filter-card { min-height:70px; border:1px solid #9fc2e5; border-radius:0; background:#fff; padding:6px 8px 8px; box-sizing:border-box; }
+#view-promotoria .promotoria-filter-green { border-color:#77b75b; background:#f7fff2; }
+#view-promotoria .promotoria-filter-orange { border-color:#f47a22; background:#fffaf5; }
+#view-promotoria .promotoria-filter-head { display:grid; grid-template-columns:minmax(80px, 1fr) auto auto auto; gap:5px; align-items:center; margin-bottom:6px; color:#000; font-size:12px; text-transform:uppercase; }
+#view-promotoria .promotoria-filter-orange .promotoria-filter-head { grid-template-columns:minmax(85px, auto) minmax(180px, 1fr) auto auto auto; }
+#view-promotoria .promotoria-filter-head b { font-size:12px; letter-spacing:0; align-self:center; }
+#view-promotoria .promotoria-filter-head span { min-width:34px; color:#516273; font-size:11px; text-align:center; text-transform:none; }
+#view-promotoria .promotoria-filter-head button { min-width:58px; height:22px; display:inline-flex; align-items:center; justify-content:center; border:1px solid #c6d5e5; border-radius:3px; background:#edf4fb; color:#33465b; font-size:10px; font-weight:800; line-height:1; text-align:center; cursor:pointer; }
+#view-promotoria .promotoria-filter-head button:hover { background:#dfeaf5; }
+#view-promotoria .promotoria-filter-search-wrap { position:relative; min-width:0; }
+#view-promotoria .promotoria-filter-search { width:100%; height:24px; min-width:0; box-sizing:border-box; border:1px solid #f18122; border-radius:4px; padding:3px 25px 3px 8px; background:#fff; color:#1f2937; font-size:12px; outline:none; text-transform:none; }
+#view-promotoria .promotoria-filter-search:focus { box-shadow:0 0 0 2px rgba(241,129,34,.18); }
+#view-promotoria .promotoria-filter-search-clear { position:absolute; top:50%; right:4px; width:18px; min-width:18px; height:18px; padding:0; transform:translateY(-50%); display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:50%; background:#eef2f6; color:#667085; font-size:15px; line-height:1; cursor:pointer; }
+#view-promotoria .promotoria-filter-search-clear:hover { background:#dde5ee; color:#111827; }
+#view-promotoria .promotoria-filter-chips { display:grid; grid-template-columns:repeat(auto-fit, minmax(126px, 1fr)); gap:5px; max-height:86px; overflow:auto; }
+#view-promotoria .promotoria-filter-card:not(.promotoria-filter-orange) .promotoria-filter-chips { grid-template-columns:repeat(auto-fit, minmax(112px, 1fr)); }
+#view-promotoria .promotoria-filter-chip { min-width:0; height:25px; border:0; border-radius:4px; padding:3px 9px; background:#c4c9cf; color:#000; font-size:12px; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
+#view-promotoria .promotoria-filter-chip.is-active { background:#4875c5; color:#fff; }
+#view-promotoria .promotoria-filter-green .promotoria-filter-chip.is-active { background:#6aac3f; color:#fff; }
+#view-promotoria .promotoria-filter-orange .promotoria-filter-chip.is-active { background:#f18122; color:#fff; }
+#view-promotoria .promotoria-filter-chip:hover { filter:brightness(.96); }
+#view-promotoria .promotoria-filter-empty { display:block; padding:5px 2px; font-size:12px; }
+#view-promotoria .promotoria-import-grid { display:grid; grid-template-columns:minmax(280px, .9fr) minmax(420px, 1.8fr); gap:14px; align-items:stretch; }
+#view-promotoria .promotoria-import-grid > section { border:1px solid #d4e0ec; border-radius:8px; background:#fbfdff; padding:14px; }
+#view-promotoria .promotoria-import-grid h4 { margin:2px 0 8px; color:#173f68; font-size:18px; }
+#view-promotoria .promotoria-import-grid > section:last-child { display:grid; grid-template-columns:repeat(2, minmax(170px, 1fr)); gap:10px; align-content:start; }
+#view-promotoria .promotoria-import-grid .mio-action { width:100%; min-height:42px; }
+#view-promotoria .promotoria-diagnostic-table table { width:100%; min-width:calc(980px + 80px * 12); table-layout:auto; }
+#view-promotoria .promotoria-diagnostic-table th,
+#view-promotoria .promotoria-diagnostic-table td { white-space:nowrap; }
+#view-promotoria .promotoria-diagnostic-table th:nth-child(7),
+#view-promotoria .promotoria-diagnostic-table td:nth-child(7) { min-width:240px; white-space:normal; overflow-wrap:anywhere; }
+#view-promotoria .promotoria-diagnostic-table th:nth-child(n+8),
+#view-promotoria .promotoria-diagnostic-table td:nth-child(n+8) { min-width:78px; text-align:right; }
+#view-promotoria .promotoria-pending-table select { min-width:150px; border:1px solid #bfcfe1; border-radius:6px; padding:5px; }
+#view-promotoria .summary-head { padding:8px 12px; min-height:0; align-items:center; }
+#view-promotoria .summary-head > div:first-child { display:flex; align-items:baseline; gap:10px; min-width:0; white-space:nowrap; }
+#view-promotoria .summary-head h3 { margin:2px 0; font-size:18px; }
+#view-promotoria .summary-head .section-kicker { margin:0; font-size:10px; }
+#view-promotoria .summary-head .muted { margin:2px 0 0; font-size:12px; }
+#view-promotoria .summary-head > div:first-child .muted { overflow:hidden; text-overflow:ellipsis; }
+#view-promotoria .summary-head .toolbar-actions { gap:6px; }
+#view-promotoria .summary-head .mio-action { padding:8px 10px; font-size:12px; }
+#view-promotoria .summary-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; }
+#view-promotoria .summary-grid.promotoria-filter-summary { display:block; }
+#view-promotoria .summary-grid .stat { min-height:58px; padding:9px 12px; }
+#view-promotoria .summary-grid .stat strong { font-size:22px; }
+#view-promotoria .support-tabs { display:flex; flex-wrap:nowrap; overflow-x:auto; gap:5px; padding-bottom:2px; }
+#view-promotoria .support-tab { flex:0 0 auto; padding:8px 11px; font-size:12px; }
+#view-promotoria .promotoria-catalog-grid { display:grid; grid-template-columns:minmax(0, 1fr) 365px; gap:14px; align-items:start; }
+#view-promotoria .promotoria-catalog-grid > section { min-width:0; border:1px solid #d4e0ec; border-radius:9px; padding:10px; background:#fbfdff; }
+#view-promotoria .promotoria-catalog-head { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:8px; }
+#view-promotoria .promotoria-catalog-head h4 { margin:1px 0; color:#173f68; }
+#view-promotoria .promotoria-catalog-head .section-kicker { margin:0; font-size:10px; }
+#view-promotoria .promotoria-catalog-head .mio-action { padding:8px 10px; font-size:12px; white-space:nowrap; }
+#view-promotoria .promotoria-catalog-table { max-height:calc(100vh - 390px); min-height:260px; }
+#view-promotoria .promotoria-catalog-table thead th { position:sticky; top:0; z-index:2; }
+#view-promotoria .promotoria-catalog-grid > section:last-child .promotoria-catalog-table table { width:100%; min-width:0; table-layout:fixed; }
+#view-promotoria .promotoria-catalog-grid > section:last-child .promotoria-catalog-table th:first-child,
+#view-promotoria .promotoria-catalog-grid > section:last-child .promotoria-catalog-table td:first-child { width:180px; }
+#view-promotoria .promotoria-catalog-grid > section:last-child .promotoria-catalog-table th:nth-child(2),
+#view-promotoria .promotoria-catalog-grid > section:last-child .promotoria-catalog-table td:nth-child(2) { width:70px; text-align:center; }
+#view-promotoria .promotoria-catalog-grid > section:last-child .promotoria-catalog-table th:last-child,
+#view-promotoria .promotoria-catalog-grid > section:last-child .promotoria-catalog-table td:last-child { width:82px; padding-left:4px; padding-right:4px; text-align:center; }
+#view-promotoria .promotoria-catalog-grid > section:last-child .promotoria-catalog-table td { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#view-promotoria .promotoria-catalog-grid > section:last-child .timbrado-mini-btn { min-width:68px; padding:5px 6px; font-size:11px; }
+#view-promotoria .promotoria-editor { padding:12px; margin-bottom:12px; border:1px solid #9fc2e5; border-radius:9px; background:#eef7ff; }
+#view-promotoria .promotoria-editor h4 { margin:0 0 9px; color:#135795; }
+#view-promotoria .promotoria-editor-fields { display:grid; grid-template-columns:1.25fr 1fr 140px 125px auto auto; gap:8px; align-items:end; }
+#view-promotoria .promotoria-editor-fields label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:800; color:#415975; }
+#view-promotoria .promotoria-editor-fields input, #view-promotoria .promotoria-editor-fields select { height:35px; box-sizing:border-box; border:1px solid #bfcfe1; border-radius:6px; padding:6px 8px; background:#fff; }
+#view-promotoria .promotoria-editor-fields .promotoria-check { flex-direction:row; align-items:center; height:35px; white-space:nowrap; }
+@media (max-width:1100px) {
+  #view-promotoria .promotoria-catalog-grid { grid-template-columns:1fr; }
+  #view-promotoria .promotoria-editor-fields { grid-template-columns:1fr 1fr; }
+}
+@media (max-width:1300px) {
+  #view-promotoria .promotoria-assignment-card { grid-template-columns:1fr; gap:8px; }
+}
+@media (max-width:1000px) {
+  #view-promotoria .promotoria-assignment-card { grid-template-columns:1fr; }
+  #view-promotoria .promotoria-assignment-form { grid-template-columns:1fr 1fr; }
+  #view-promotoria .promotoria-assignment-form button { grid-column:1 / -1; }
+}

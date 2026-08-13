@@ -5304,6 +5304,38 @@ function mioSaeDisplay(item) {
   return (serie || folio) ? `${serie}${folio}` : String(item?.sae_codigo || "");
 }
 
+async function guardarObservacionMio(input) {
+  const invoiceId = Number(input?.dataset?.id || 0);
+  if (!invoiceId) return;
+  const value = String(input.value || "");
+  const original = String(input.dataset.original || "");
+  if (value === original) return;
+  input.classList.add("is-saving");
+  try {
+    const data = await apiJson(`/api/billing/${encodeURIComponent(invoiceId)}/observaciones`, {
+      method: "PUT",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ observaciones: value }),
+    });
+    const saved = String(data.observaciones_mio || "");
+    input.dataset.original = saved;
+    input.value = saved;
+    input.title = saved;
+    input.classList.remove("is-error");
+    input.classList.add("is-saved");
+    const row = currentInvoices.find((item) => Number(item.id) === invoiceId);
+    if (row) row.observaciones_mio = saved;
+    window.setTimeout(() => input.classList.remove("is-saved"), 900);
+  } catch (error) {
+    input.value = original;
+    input.title = original;
+    input.classList.add("is-error");
+    alert(error.message || "No se pudieron guardar las observaciones.");
+  } finally {
+    input.classList.remove("is-saving");
+  }
+}
+
 function renderInvoices(payload) {
   // Las pruebas controladas se conservan en la base para auditoría, pero MIO
   // sólo debe mostrar documentos operativos generados por el programa.
@@ -5333,6 +5365,7 @@ function renderInvoices(payload) {
       <td>${escapeCell(item.tienda || item.cliente_nombre || "")}</td>
       <td>${escapeCell(item.comanda || "")}</td>
       <td>${escapeCell(mioSaeDisplay(item))}</td>
+      <td><input class="mio-observaciones-input" data-id="${escapeAttr(item.id)}" data-original="${escapeAttr(item.observaciones_mio || "")}" value="${escapeAttr(item.observaciones_mio || "")}" title="${escapeAttr(item.observaciones_mio || "")}" placeholder="Observaciones"></td>
     `;
     tr.addEventListener("click", () => selectInvoice(item));
     tr.querySelector(".billing-invoice-select")?.addEventListener("click", (event) => event.stopPropagation());
@@ -5340,6 +5373,18 @@ function renderInvoices(payload) {
       const key = event.target.dataset.key;
       if (event.target.checked) selectedBillingInvoiceKeys.add(key); else selectedBillingInvoiceKeys.delete(key);
       actualizarSeleccionFacturasMio();
+    });
+    const obsInput = tr.querySelector(".mio-observaciones-input");
+    obsInput?.addEventListener("click", (event) => event.stopPropagation());
+    obsInput?.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.target.blur();
+      }
+    });
+    obsInput?.addEventListener("blur", (event) => {
+      guardarObservacionMio(event.target).catch((error) => alert(error.message || "No se pudieron guardar las observaciones."));
     });
     // Double-click behaviour removed per user request
     billingTableBody.appendChild(tr);
