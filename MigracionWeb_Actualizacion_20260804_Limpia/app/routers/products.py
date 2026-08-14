@@ -13,6 +13,7 @@ import uuid
 
 import pandas as pd
 import fitz
+from openpyxl import load_workbook
 from PIL import Image
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -70,6 +71,29 @@ def _normalize_iva(value) -> str:
     if text in {"si", "s", "1", "true", "t", "yes", "y", "x", "16", "16%", "gravado", "coniva"}:
         return "Sí"
     return "No"
+
+
+def _normalize_descuento(value) -> str:
+    text = _normalize_text(value)
+    return "Sí" if text in {"si", "s", "1", "true", "t", "yes", "y"} else "No"
+
+
+def _nombre_encabezado_excel(valor, formato_numero="") -> str:
+    """Conserva el texto visible de un encabezado, incluyendo porcentajes.
+
+    Pandas lee una celda de encabezado con formato 16% como el valor decimal
+    0.16. Para listas de precios necesitamos el nombre de la columna, no el
+    valor interno de Excel.
+    """
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+        decimal = float(valor)
+        # Los nombres numéricos entre 0 y 1 son listas porcentuales. Algunas
+        # hojas pierden el formato % al copiarse, por ello el rango también se
+        # reconoce aunque Excel marque el formato como General.
+        if "%" in str(formato_numero or "") or 0 < decimal < 1:
+            porcentaje = decimal * 100
+            return f"{porcentaje:.10f}".rstrip("0").rstrip(".") + "%"
+    return str(valor or "").strip()
 
 
 def _remote_catalog_url(path: str, params: dict | None = None) -> str:
@@ -228,6 +252,9 @@ def _catalog_vps_download_image(opener: urllib.request.OpenerDirector, image_url
     destino = os.path.join(carpeta, f"principal{ext}")
     with open(destino, "wb") as fh:
         fh.write(raw)
+    # El VPS puede entregar PNG/JPG de varios MB. Se normalizan al momento de
+    # descargarlas para que ficha y catálogo no carguen archivos pesados.
+    destino, ext = catalogo_legacy.optimizar_imagen_ficha(destino)
     try:
         with open(marker_path, "w", encoding="utf-8") as fh:
             fh.write(absolute_url)
@@ -826,7 +853,7 @@ def catalogo_admin_guardar_ficha(payload: dict = Body(...), request: Request = N
         data = ProductoFichaIn(**payload)
         if not data.empresas_relacionadas:
             data = data.model_copy(update={"empresas_relacionadas": [data.empresa]})
-        resultado = catalogo_legacy._upsert_ficha_data_impl(data)
+        return catalogo_legacy.admin_api_guardar_ficha(data, request, user)
         catalogo_legacy.registrar_bitacora(
             user,
             "EDITAR_FICHA",
@@ -1376,9 +1403,20 @@ def update_prices_bulk(payload: object = Body(...), user=Depends(require_user)):
 @router.post("/import")
 def import_products(file: UploadFile = File(...), user=Depends(require_user)):
     try:
-        df = pd.read_excel(io.BytesIO(file.file.read())).fillna("")
-        col_map = {_normalize_text(col): str(col).strip() for col in df.columns}
-        fixed_norms = {"cip", "descripcion", "unidad", "iva"}
+        content = file.file.read()
+        df = pd.read_excel(io.BytesIO(content)).fillna("")
+        # Conservamos la columna real para leer cada renglón y un nombre de
+        # presentación para crear la lista. Excel puede entregar 16% como 0.16.
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=False)
+        worksheet = workbook.active
+        columnas = []
+        for index, actual_col in enumerate(df.columns, start=1):
+            cell = worksheet.cell(row=1, column=index)
+            label = _nombre_encabezado_excel(cell.value if cell.value is not None else actual_col, cell.number_format)
+            columnas.append({"actual": actual_col, "label": label, "norm": _normalize_text(label)})
+        workbook.close()
+        col_map = {item["norm"]: item["actual"] for item in columnas}
+        fixed_norms = {"cip", "descripcion", "unidad", "iva", "descuento"}
 
         def get_col(*names):
             for name in names:
@@ -1389,15 +1427,15 @@ def import_products(file: UploadFile = File(...), user=Depends(require_user)):
         col_cip = get_col("cip")
         col_desc = get_col("descripcion", "descripcionproducto", "desc")
         col_unit = get_col("unidad")
+        col_discount = get_col("descuento")
         if not col_cip:
             raise HTTPException(status_code=400, detail="No se encontró la columna CIP.")
 
         barcode_cols = {}
-        for col in df.columns:
-            real_col = str(col).strip()
-            normalized = _normalize_text(real_col)
+        for item in columnas:
+            normalized = item["norm"]
             if normalized.startswith("cb"):
-                barcode_cols[normalized[2:]] = real_col
+                barcode_cols[normalized[2:]] = item["actual"]
 
         conn = get_legacy_connection()
         cursor = conn.cursor()
@@ -1418,16 +1456,16 @@ def import_products(file: UploadFile = File(...), user=Depends(require_user)):
 
             lists_by_norm = {}
             created_lists = []
-            for col in df.columns:
-                real_col = str(col).strip()
-                normalized = _normalize_text(real_col)
+            for item in columnas:
+                real_col = item["label"]
+                normalized = item["norm"]
                 if normalized in fixed_norms or normalized.startswith("cb"):
                     continue
                 cursor.execute(
                     "INSERT INTO listas_precios (nombre, descripcion) VALUES (%s, %s)",
                     (real_col, ""),
                 )
-                lists_by_norm[normalized] = (real_col, int(cursor.lastrowid))
+                lists_by_norm[normalized] = (real_col, int(cursor.lastrowid), item["actual"])
                 created_lists.append(real_col)
 
             products_inserted = 0
@@ -1438,6 +1476,7 @@ def import_products(file: UploadFile = File(...), user=Depends(require_user)):
                     continue
                 description = str(row.get(col_desc, "")).strip() if col_desc else ""
                 unit = str(row.get(col_unit, "")).strip() if col_unit else ""
+                discount_source = row.get(col_discount, "") if col_discount else ""
                 iva_source = ""
                 for norm, real_col in col_map.items():
                     if norm == "iva":
@@ -1446,14 +1485,14 @@ def import_products(file: UploadFile = File(...), user=Depends(require_user)):
 
                 cursor.execute(
                     """
-                    INSERT INTO productos (cip, descripcion, unidad, iva, codigo_barras)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO productos (cip, descripcion, unidad, iva, descuento, codigo_barras)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     """,
-                    (cip, description, unit, _normalize_iva(iva_source), ""),
+                    (cip, description, unit, _normalize_iva(iva_source), _normalize_descuento(discount_source), ""),
                 )
                 products_inserted += 1
 
-                for list_norm, (list_name, list_id) in lists_by_norm.items():
+                for list_norm, (list_name, list_id, actual_col) in lists_by_norm.items():
                     barcode_col = barcode_cols.get(list_norm)
                     barcode = str(row.get(barcode_col, "")).strip() if barcode_col else ""
                     cursor.execute(
@@ -1461,7 +1500,7 @@ def import_products(file: UploadFile = File(...), user=Depends(require_user)):
                         INSERT INTO precios_productos (lista_id, cip, precio, codigo_barras)
                         VALUES (%s, %s, %s, %s)
                         """,
-                        (list_id, cip, _to_float(row.get(list_name, "")), barcode),
+                        (list_id, cip, _to_float(row.get(actual_col, "")), barcode),
                     )
                     prices_inserted += 1
 
@@ -1501,6 +1540,7 @@ def _export_products(
                 "descripcion": item.get("descripcion"),
                 "unidad": item.get("unidad"),
                 "iva": item.get("iva"),
+                "descuento": item.get("descuento"),
             }
             for lista in payload["lists"]:
                 data = (item.get("precios") or {}).get(lista) or {}

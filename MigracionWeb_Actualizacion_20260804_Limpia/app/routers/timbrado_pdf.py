@@ -41,7 +41,23 @@ FORMAS_PAGO = {
     "02": "Cheque nominativo",
     "03": "Transferencia electronica de fondos",
     "04": "Tarjeta de credito",
+    "05": "Monedero electronico",
+    "06": "Dinero electronico",
+    "08": "Vales de despensa",
+    "12": "Dacion en pago",
+    "13": "Pago por subrogacion",
+    "14": "Pago por consignacion",
+    "15": "Condonacion",
+    "17": "Compensacion",
+    "23": "Novacion",
+    "24": "Confusion",
+    "25": "Remision de deuda",
+    "26": "Prescripcion o caducidad",
+    "27": "A satisfaccion del acreedor",
     "28": "Tarjeta de debito",
+    "29": "Tarjeta de servicios",
+    "30": "Aplicacion de anticipos",
+    "31": "Intermediario pagos",
     "99": "Por definir",
 }
 
@@ -334,7 +350,14 @@ def _consignee_address_line(row):
 def _load_consignee_from_legacy(db_row, empresa):
     factura_id = str(_row_get(db_row, "factura_id", "") or "").strip()
     factura = str(_row_get(db_row, "factura", "") or "").strip()
-    cliente_numero = str(_row_get(db_row, "cliente_receptor_numero", "") or _row_get(db_row, "numero_cliente", "") or "").strip()
+    # El receptor fiscal puede ser una central distinta de la sucursal que
+    # recibe. Para "Enviar a" siempre se prioriza el cliente origen comercial.
+    cliente_numero = str(
+        _row_get(db_row, "cliente_origen_numero", "")
+        or _row_get(db_row, "numero_cliente", "")
+        or _row_get(db_row, "cliente_receptor_numero", "")
+        or ""
+    ).strip()
     try:
         from app.legacy_db import get_legacy_connection
 
@@ -433,7 +456,11 @@ def _shipping_from_addenda(xml_root):
 
 
 def _cfdi_data(xml_root, db_row):
-    ns = {"cfdi": "http://www.sat.gob.mx/cfd/4", "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital"}
+    ns = {
+        "cfdi": "http://www.sat.gob.mx/cfd/4",
+        "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital",
+        "pago20": "http://www.sat.gob.mx/Pagos20",
+    }
     comp = xml_root.find(".//cfdi:Comprobante", ns) or xml_root
     emisor = comp.find("cfdi:Emisor", ns) or xml_root.find(".//cfdi:Emisor", ns)
     receptor = comp.find("cfdi:Receptor", ns) or xml_root.find(".//cfdi:Receptor", ns)
@@ -474,6 +501,45 @@ def _cfdi_data(xml_root, db_row):
     subtotal = _safe_get(comp, "SubTotal", "0")
     descuento = _safe_get(comp, "Descuento", "0")
     total = _safe_get(comp, "Total", "0")
+    es_complemento_pago = _safe_get(comp, "TipoDeComprobante", "").upper() == "P"
+    monto_total_pagos = "0"
+    rep_pagos = []
+    if es_complemento_pago:
+        pagos_totales = comp.find("cfdi:Complemento/pago20:Pagos/pago20:Totales", ns)
+        monto_total_pagos = _safe_get(pagos_totales, "MontoTotalPagos", "0")
+        for pago in comp.findall("cfdi:Complemento/pago20:Pagos/pago20:Pago", ns):
+            pago_info = {
+                "fecha": _safe_get(pago, "FechaPago"),
+                "forma": _safe_get(pago, "FormaDePagoP"),
+                "moneda": _safe_get(pago, "MonedaP"),
+                "monto": _safe_get(pago, "Monto"),
+                "num_operacion": _safe_get(pago, "NumOperacion"),
+                "rfc_cta_ord": _safe_get(pago, "RfcEmisorCtaOrd"),
+                "cta_ordenante": _safe_get(pago, "CtaOrdenante"),
+                "rfc_cta_ben": _safe_get(pago, "RfcEmisorCtaBen"),
+                "cta_beneficiario": _safe_get(pago, "CtaBeneficiario"),
+                "docs": [],
+            }
+            for docto in pago.findall("pago20:DoctoRelacionado", ns):
+                pago_info["docs"].append({
+                    "uuid": _safe_get(docto, "IdDocumento"),
+                    "serie": _safe_get(docto, "Serie"),
+                    "folio": _safe_get(docto, "Folio"),
+                    "parcialidad": _safe_get(docto, "NumParcialidad"),
+                    "saldo_anterior": _safe_get(docto, "ImpSaldoAnt"),
+                    "pagado": _safe_get(docto, "ImpPagado"),
+                    "saldo_insoluto": _safe_get(docto, "ImpSaldoInsoluto"),
+                    "objeto_imp": _safe_get(docto, "ObjetoImpDR"),
+                })
+            rep_pagos.append(pago_info)
+        if str(monto_total_pagos or "0") in ("", "0", "0.0", "0.00"):
+            try:
+                monto_total_pagos = str(sum(
+                    float(_safe_get(pago, "Monto", "0") or 0)
+                    for pago in comp.findall("cfdi:Complemento/pago20:Pagos/pago20:Pago", ns)
+                ))
+            except Exception:
+                monto_total_pagos = "0"
     impuestos = comp.find("cfdi:Impuestos", ns)
     iva = "0"
     if impuestos is not None:
@@ -517,13 +583,16 @@ def _cfdi_data(xml_root, db_row):
         "fecha_iso": _safe_get(comp, "Fecha"),
         "fecha_corta": _date_display(_safe_get(comp, "Fecha"), False),
         "lugar": _safe_get(comp, "LugarExpedicion") or erow.get("lugar_expedicion") or erow.get("cp_fiscal") or "",
-        "forma": _catalog_text(_safe_get(comp, "FormaPago"), FORMAS_PAGO),
-        "metodo": _catalog_text(_safe_get(comp, "MetodoPago"), METODOS_PAGO),
+        "forma": _catalog_text((rep_pagos[0].get("forma") if rep_pagos else "") or _safe_get(comp, "FormaPago"), FORMAS_PAGO),
+        "metodo": "Complemento para recepcion de pagos" if es_complemento_pago else _catalog_text(_safe_get(comp, "MetodoPago"), METODOS_PAGO),
         "uso": _catalog_text(_safe_get(receptor, "UsoCFDI") or rrow.get("uso_cfdi"), USOS_CFDI),
         "subtotal": subtotal,
         "descuento": descuento,
         "iva": iva,
         "total": total,
+        "es_complemento_pago": es_complemento_pago,
+        "monto_total_pagos": monto_total_pagos,
+        "rep_pagos": rep_pagos,
         "uuid": _safe_get(tfd, "UUID") or _row_get(db_row, "uuid", ""),
         "fecha_timbrado": _date_display(_safe_get(tfd, "FechaTimbrado") or _row_get(db_row, "fecha_timbrado", ""), True),
         "fecha_timbrado_iso": _safe_get(tfd, "FechaTimbrado") or _row_get(db_row, "fecha_timbrado", ""),
@@ -590,7 +659,7 @@ def _draw_header(c, data):
         # "Uso CFDI" se conserva en una sola línea: la descripción larga
         # no debe desplazar los campos siguientes ni salirse del recuadro.
         if label == "Uso CFDI:":
-            lines = [_truncate_to_width(value, value_w, FONT, 8.0)]
+            lines = _wrap_to_width(value, value_w, FONT, 8.0)[:2]
         else:
             lines = _wrap_to_width(value, value_w, FONT, 8.0)[:2]
         c.setFont(FONT, 8.0)
@@ -619,7 +688,7 @@ def _draw_product_table_header(c, y=506, show_descuento=True):
     x = MARGIN_L
     if show_descuento:
         col_w = [34, 40, 58, 43, 72, 180, 35, 35, 48]
-        headers = ["Cantidad", "Unidad", "Clave Unidad", "Clave", "Clave Prod. Serv", "Descripcion", "% Desc", "P/U", "Importe"]
+        headers = ["Cantidad", "Unidad", "Clave Unidad", "Clave", "Clave Prod. Serv", "Descripcion", "Descuento", "P/U", "Importe"]
     else:
         col_w = [34, 40, 58, 43, 72, 215, 35, 48]
         headers = ["Cantidad", "Unidad", "Clave Unidad", "Clave", "Clave Prod. Serv", "Descripcion", "P/U", "Importe"]
@@ -636,7 +705,8 @@ def _draw_product_table_header(c, y=506, show_descuento=True):
 
 
 def _draw_product_table(c, data):
-    show_descuento = _has_descuento(data)
+    # La columna se imprime siempre para que cada partida indique 0.00 o su %.
+    show_descuento = True
     starts, col_w, table_right, y = _draw_product_table_header(c, show_descuento=show_descuento)
 
     row_h = 13.2
@@ -684,6 +754,77 @@ def _draw_product_table(c, data):
     return y
 
 
+def _draw_rep_table(c, data):
+    y = 506
+    c.setFont(FONT_B, 7.2)
+    c.drawString(MARGIN_L, y + 14, "Detalle del complemento de pago")
+    pagos = data.get("rep_pagos") or []
+    pago = pagos[0] if pagos else {}
+    c.setFont(FONT, 6.6)
+    resumen = [
+        f"Fecha pago: {_date_display(pago.get('fecha'), True)}",
+        f"Forma: {_catalog_text(pago.get('forma'), FORMAS_PAGO)}",
+        f"Moneda: {pago.get('moneda') or 'MXN'}",
+        f"Monto: ${_fmt_money(pago.get('monto') or data.get('monto_total_pagos'))}",
+    ]
+    c.drawString(MARGIN_L, y, _truncate_to_width("  |  ".join(resumen), USABLE, FONT, 6.6))
+    y -= 12
+    extra = []
+    if pago.get("num_operacion"):
+        extra.append(f"Operacion: {pago.get('num_operacion')}")
+    if pago.get("cta_ordenante"):
+        extra.append(f"Origen: {pago.get('rfc_cta_ord') or ''} {pago.get('cta_ordenante')}")
+    if pago.get("cta_beneficiario"):
+        extra.append(f"Destino: {pago.get('rfc_cta_ben') or ''} {pago.get('cta_beneficiario')}")
+    if extra:
+        c.drawString(MARGIN_L, y, _truncate_to_width("  |  ".join(extra), USABLE, FONT, 6.2))
+        y -= 13
+
+    col_w = [38, 44, 265, 58, 58, 58, 44]
+    headers = ["Serie", "Folio", "UUID documento relacionado", "Saldo ant.", "Pagado", "Saldo", "Parc."]
+    starts = [MARGIN_L]
+    for width in col_w[:-1]:
+        starts.append(starts[-1] + width)
+    table_right = starts[-1] + col_w[-1]
+    c.line(MARGIN_L, y + 8, table_right, y + 8)
+    c.setFont(FONT_B, 6.2)
+    for i, header in enumerate(headers):
+        c.drawCentredString(starts[i] + col_w[i] / 2, y, header)
+    c.line(MARGIN_L, y - 5, table_right, y - 5)
+    y -= 17
+    docs = []
+    for item in pagos:
+        docs.extend(item.get("docs") or [])
+    c.setFont(FONT, 6.1)
+    for doc in docs or [{}]:
+        if y < 318:
+            c.line(MARGIN_L, y + 8, table_right, y + 8)
+            c.showPage()
+            _draw_header(c, data)
+            y = 506
+        vals = [
+            doc.get("serie") or "",
+            doc.get("folio") or "",
+            doc.get("uuid") or "",
+            _fmt_money(doc.get("saldo_anterior")),
+            _fmt_money(doc.get("pagado")),
+            _fmt_money(doc.get("saldo_insoluto")),
+            doc.get("parcialidad") or "",
+        ]
+        c.line(MARGIN_L, y + 8, table_right, y + 8)
+        for sx in starts:
+            c.line(sx, y + 8, sx, y - 5)
+        c.line(table_right, y + 8, table_right, y - 5)
+        for i, val in enumerate(vals):
+            if i == 2:
+                c.drawString(starts[i] + 3, y, _truncate_to_width(val, col_w[i] - 5, FONT, 6.1))
+            else:
+                c.drawCentredString(starts[i] + col_w[i] / 2, y, _truncate_to_width(val, col_w[i] - 4, FONT, 6.1))
+        y -= 13
+    c.line(MARGIN_L, y + 8, table_right, y + 8)
+    return y
+
+
 def _draw_totals(c, data, draw_legend=True, qr_y=300, qr_size=95, totals_y=262, draw_words=True):
     qr_data = (
         "https://verificacfdi.facturaelectronica.sat.gob.mx/default.aspx"
@@ -691,22 +832,23 @@ def _draw_totals(c, data, draw_legend=True, qr_y=300, qr_size=95, totals_y=262, 
     )
     _draw_qr(c, MARGIN_L, qr_y, qr_size, qr_data)
 
+    monto_mostrado = data.get("monto_total_pagos") if data.get("es_complemento_pago") else data["total"]
     if draw_words:
         c.setFont(FONT, 7)
-        c.drawString(MARGIN_L, qr_y - 18, _numero_a_letras(data["total"]))
+        c.drawString(MARGIN_L, qr_y - 18, _numero_a_letras(monto_mostrado))
     c.setFont(FONT_B, 7)
-    has_descuento = float(data.get("descuento") or 0) > 0
-    has_iva = float(data.get("iva") or 0) > 0
-    labels = [("Subtotal", data["subtotal"])]
-    if has_descuento:
-        labels.append(("Descuento", data["descuento"]))
-    if has_iva:
-        labels.append(("I.V.A.", data["iva"]))
-    labels.append(("Total", data["total"]))
+    labels = ([
+        ("Monto recibido (REP 2.0)", monto_mostrado),
+    ] if data.get("es_complemento_pago") else [
+        ("Subtotal", data["subtotal"]),
+        ("Descuento", data["descuento"]),
+        ("I.V.A.", data["iva"]),
+        ("Total", data["total"]),
+    ])
     y = totals_y
     for label, value in labels:
         c.drawRightString(480, y, label)
-        c.drawRightString(585, y, f"${_fmt_money(value)}" if label == "Total" else _fmt_money(value))
+        c.drawRightString(585, y, f"${_fmt_money(value)}" if label in ("Total", "Monto recibido (REP 2.0)") else _fmt_money(value))
         y -= 14
     if draw_legend:
         c.setFont(FONT, 6.6)
@@ -803,12 +945,12 @@ def _draw_eza_header(c, data):
     c.setFont(FONT, 7.3)
     c.drawCentredString(PAGE_W / 2 + 80, 731, _truncate_to_width(data["emisor_direccion"], 440, FONT, 7.3))
 
-    left_x, right_x, top, bottom = 31, 383, 711, 584
+    left_x, right_x, top, bottom = 31, 383, 711, 570
     left_w, right_w = 342, 208
     c.rect(left_x, bottom, left_w, top - bottom, stroke=1, fill=0)
     c.rect(right_x, bottom + 2, right_w, top - bottom - 2, stroke=1, fill=0)
     c.setFont(FONT_B, 10)
-    c.drawCentredString(left_x + left_w / 2 + 72, top + 1, "Datos del cliente")
+    c.drawString(left_x + 3, top + 1, "Datos del cliente")
     c.drawCentredString(right_x + right_w / 2, top + 1, "Comprobante fiscal digital")
 
     c.setFont(FONT_B, 8.2)
@@ -833,22 +975,36 @@ def _draw_eza_header(c, data):
     for label, value in meta:
         c.setFont(FONT_B, 8)
         c.drawString(right_x + 3, y, label)
-        c.setFont(FONT, 8)
-        if label == "Metodo de pago y Cuenta:":
-            c.drawString(right_x + 11, y - 15, _truncate_to_width(value, 180, FONT, 8))
-            y -= 32
+        c.setFont(FONT, 7.4)
+        if label == "Forma de pago:":
+            c.setFont(FONT, 6.2)
+            c.drawString(right_x + 11, y - 10, _truncate_to_width(value, 188, FONT, 6.2))
+            y -= 25
+        elif label == "Metodo de pago y Cuenta:":
+            lines = _wrap_to_width(value, 188, FONT, 7.4)[:2]
+            for idx, line in enumerate(lines or [""]):
+                c.drawString(right_x + 11, y - 10 - (idx * 9), line)
+            y -= 14 + (max(1, len(lines)) * 9) + 2
+        elif label == "Uso de CFDI:":
+            # Igual que el método de pago: etiqueta arriba y valor debajo,
+            # alineado a la izquierda dentro del bloque fiscal.
+            lines = _wrap_to_width(value, 188, FONT, 7.4)[:2]
+            for idx, line in enumerate(lines or [""]):
+                c.drawString(right_x + 11, y - 10 - (idx * 9), line)
+            y -= 14 + (max(1, len(lines)) * 9) + 2
         else:
-            c.drawString(right_x + 96, y, _truncate_to_width(value, 104, FONT, 8))
-            y -= 15
+            c.drawString(right_x + 96, y, _truncate_to_width(value, 104, FONT, 7.4))
+            y -= 12
 
-    y = 574
+    y = 558
     c.setFont(FONT_B, 8.5)
     c.drawString(35, y, "Enviar a:")
     c.drawString(35, y - 13, "Direccion envio:")
     c.drawString(35, y - 26, "Orden de compra:")
     c.setFont(FONT, 7.8)
-    c.drawString(113, y - 13, _truncate_to_width(data["enviar_a"] or data["direccion_envio"] or "-", 300, FONT, 7.8))
-    c.drawString(113, y - 26, _truncate_to_width(data.get("orden_compra") or "-", 300, FONT, 7.8))
+    c.drawString(113, y, _truncate_to_width(data["enviar_a"] or "-", 470, FONT, 7.8))
+    c.drawString(113, y - 13, _truncate_to_width(data["direccion_envio"] or "-", 470, FONT, 6.6))
+    c.drawString(113, y - 26, _truncate_to_width(data.get("orden_compra") or "-", 470, FONT, 7.8))
     c.setFont(FONT_B, 8.5)
     c.drawString(482, y, "Vendedor :")
 
@@ -857,7 +1013,7 @@ def _draw_eza_products_header(c, y=517, show_descuento=True):
     x = 29
     c.line(x, y, 592, y)
     if show_descuento:
-        headers = ["Cantidad", "Unidad", "Clave\nUnidad", "Clave", "Clave\nProd. Serv", "Descripcion", "% Desc", "P/U", "Importe"]
+        headers = ["Cantidad", "Unidad", "Clave\nUnidad", "Clave", "Clave\nProd. Serv", "Descripcion", "Descuento", "P/U", "Importe"]
         col_w = [45, 38, 52, 52, 70, 166, 45, 54, 41]
     else:
         headers = ["Cantidad", "Unidad", "Clave\nUnidad", "Clave", "Clave\nProd. Serv", "Descripcion", "P/U", "Importe"]
@@ -875,7 +1031,7 @@ def _draw_eza_products_header(c, y=517, show_descuento=True):
 
 
 def _draw_eza_products(c, data):
-    show_descuento = _has_descuento(data)
+    show_descuento = True
     starts, col_w, row_y = _draw_eza_products_header(c, show_descuento=show_descuento)
     c.setFont(FONT, 7.4)
     for concept in data["conceptos"]:
@@ -910,35 +1066,121 @@ def _draw_eza_products(c, data):
     return row_y
 
 
+def _draw_eza_rep_details(c, data):
+    y = 514
+    left = 31
+    right = 592
+    pagos = data.get("rep_pagos") or []
+    pago = pagos[0] if pagos else {}
+    c.setFont(FONT_B, 9)
+    c.drawString(left, y, "Detalle del pago")
+    y -= 14
+    c.setFont(FONT_B, 7.6)
+    labels = [
+        ("Fecha pago:", _date_display(pago.get("fecha"), True)),
+        ("Moneda:", pago.get("moneda") or "MXN"),
+        ("Monto:", "$" + _fmt_money(pago.get("monto") or data.get("monto_total_pagos"))),
+    ]
+    x = left
+    widths = [185, 120, 160]
+    for (label, value), width in zip(labels, widths):
+        c.drawString(x, y, label)
+        c.setFont(FONT, 7.4)
+        c.drawString(x + 50, y, _truncate_to_width(value, width - 52, FONT, 7.4))
+        c.setFont(FONT_B, 7.6)
+        x += width
+    y -= 13
+    c.setFont(FONT_B, 7.6)
+    c.drawString(left, y, "Forma pago:")
+    c.setFont(FONT, 7.2)
+    c.drawString(left + 64, y, _truncate_to_width(_catalog_text(pago.get("forma"), FORMAS_PAGO), 455, FONT, 7.2))
+    y -= 13
+    if pago.get("num_operacion"):
+        _draw_label(c, "Num. operacion:", pago.get("num_operacion"), left, y, 78, 450, 7.2)
+        y -= 12
+    cuenta_txt = []
+    if pago.get("cta_ordenante"):
+        cuenta_txt.append(f"Origen {pago.get('rfc_cta_ord') or ''} {pago.get('cta_ordenante')}")
+    if pago.get("cta_beneficiario"):
+        cuenta_txt.append(f"Destino {pago.get('rfc_cta_ben') or ''} {pago.get('cta_beneficiario')}")
+    if cuenta_txt:
+        _draw_label(c, "Cuentas:", " | ".join(cuenta_txt), left, y, 45, 500, 7.0)
+        y -= 13
+
+    y -= 4
+    c.line(left, y, right, y)
+    headers = ["Serie", "Folio", "UUID documento relacionado", "Saldo ant.", "Pagado", "Saldo"]
+    col_w = [43, 48, 276, 62, 62, 62]
+    starts = [left]
+    for width in col_w[:-1]:
+        starts.append(starts[-1] + width)
+    c.setFont(FONT_B, 7.0)
+    for i, head in enumerate(headers):
+        c.drawCentredString(starts[i] + col_w[i] / 2, y - 12, head)
+    c.line(left, y - 20, right, y - 20)
+    y -= 33
+    c.setFont(FONT, 6.8)
+    docs = []
+    for item in pagos:
+        docs.extend(item.get("docs") or [])
+    for doc in docs or [{}]:
+        vals = [
+            doc.get("serie") or "",
+            doc.get("folio") or "",
+            doc.get("uuid") or "",
+            _fmt_money(doc.get("saldo_anterior")),
+            _fmt_money(doc.get("pagado")),
+            _fmt_money(doc.get("saldo_insoluto")),
+        ]
+        if y < 360:
+            c.showPage()
+            _draw_eza_header(c, data)
+            y = 514
+        for i, val in enumerate(vals):
+            if i == 2:
+                c.drawCentredString(starts[i] + col_w[i] / 2, y, _truncate_to_width(val, col_w[i] - 6, FONT, 6.8))
+            else:
+                c.drawCentredString(starts[i] + col_w[i] / 2, y, _truncate_to_width(val, col_w[i] - 4, FONT, 6.8))
+        y -= 13
+    c.line(left, y + 7, right, y + 7)
+    return y
+
+
 def _draw_eza_totals_and_timbre(c, data, qr_y=367, qr_size=93, totals_y=471, draw_words=True):
     qr_data = (
         "https://verificacfdi.facturaelectronica.sat.gob.mx/default.aspx"
         f"?id={data['uuid']}&re={data['emisor_rfc']}&rr={data['receptor_rfc']}&tt={data['total']}"
     )
     _draw_qr(c, 35, qr_y, qr_size, qr_data)
-    c.setFont(FONT, 8)
-    c.drawString(388, totals_y, "Subtotal")
-    c.drawRightString(584, totals_y, _fmt_money(data["subtotal"]))
-    has_descuento = float(data.get("descuento") or 0) > 0
-    has_iva = float(data.get("iva") or 0) > 0
-    y = totals_y - 14
-    if has_descuento:
+    if data.get("es_complemento_pago"):
+        monto = data.get("monto_total_pagos") or "0"
+        c.setFont(FONT_B, 8.5)
+        c.drawString(388, totals_y, "Monto recibido (REP 2.0)")
+        c.drawRightString(584, totals_y, _fmt_money(monto))
+        c.line(343, totals_y - 6, 584, totals_y - 6)
+        if draw_words:
+            c.setFont(FONT_B, 8)
+            c.drawCentredString(452, totals_y - 34, _numero_a_letras(monto))
+    else:
+        c.setFont(FONT, 8)
+        c.drawString(388, totals_y, "Subtotal")
+        c.drawRightString(584, totals_y, _fmt_money(data["subtotal"]))
+        y = totals_y - 14
         c.drawString(388, y, "Descuento")
         c.drawRightString(584, y, _fmt_money(data["descuento"]))
         y -= 14
-    if has_iva:
         c.drawString(388, y, "I.V.A.")
         c.drawRightString(584, y, _fmt_money(data["iva"]))
         y -= 14
-    c.line(343, y, 584, y)
-    y -= 12
-    c.setFont(FONT_B, 8.5)
-    c.drawString(388, y, "Total")
-    c.drawRightString(584, y, _fmt_money(data["total"]))
-    c.line(343, y - 6, 584, y - 6)
-    c.setFont(FONT_B, 8)
-    if draw_words and y - 34 >= 313:
-        c.drawCentredString(452, y - 34, _numero_a_letras(data["total"]))
+        c.line(343, y, 584, y)
+        y -= 12
+        c.setFont(FONT_B, 8.5)
+        c.drawString(388, y, "Total")
+        c.drawRightString(584, y, _fmt_money(data["total"]))
+        c.line(343, y - 6, 584, y - 6)
+        c.setFont(FONT_B, 8)
+        if draw_words and y - 34 >= 313:
+            c.drawCentredString(452, y - 34, _numero_a_letras(data["total"]))
 
     box_x, box_y, box_w, box_h = 31, 86, 560, 219
     c.rect(box_x, box_y, box_w, box_h, stroke=1, fill=0)
@@ -978,7 +1220,7 @@ def _generar_eza_pdf(data):
     c = pdfcanvas.Canvas(buf, pagesize=letter)
     c.setTitle(f"EZA2007 CFDI {data['folio'] or data['factura']}")
     _draw_eza_header(c, data)
-    table_y = _draw_eza_products(c, data)
+    table_y = _draw_eza_rep_details(c, data) if data.get("es_complemento_pago") else _draw_eza_products(c, data)
     # El QR ocupa de y=367 a y=460. Si la tabla llega a esa zona, los datos
     # fiscales se colocan en una página adicional para no encimarse.
     # Se reduce y desplaza el QR dentro del espacio libre disponible.
@@ -1009,7 +1251,7 @@ def generar_cfdi_pdf(xml_root, db_row=None, logo_archivo=""):
     c.setTitle(f"CFDI {data['folio'] or data['factura']}")
 
     _draw_header(c, data)
-    table_y = _draw_product_table(c, data)
+    table_y = _draw_rep_table(c, data) if data.get("es_complemento_pago") else _draw_product_table(c, data)
     # El QR ocupa de y=300 a y=395; se requiere margen sobre esa área.
     # Si el QR cabe compacto bajo la tabla, se conserva una sola página.
     footer_top = table_y - 8

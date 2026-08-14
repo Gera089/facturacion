@@ -5,6 +5,7 @@ import io
 import os
 import re
 import time
+import shutil
 import bcrypt
 import secrets
 import unicodedata
@@ -5126,6 +5127,10 @@ def normalizar_nombre_empresa_catalogo(nombre: str) -> str:
     limpio = reparar_mojibake(texto_seguro(nombre))
     clave = unicodedata.normalize("NFKD", limpio).encode("ascii", "ignore").decode("ascii").strip().lower()
     clave = re.sub(r"\s+", " ", clave)
+    # Algunas fuentes MySQL antiguas entregan la ñ como '?'. Reconocer la
+    # empresa antes de convertirla en carpeta evita crear Gourmet_Espaa.
+    if re.fullmatch(r"gourmet espa.a", clave):
+        return "Gourmet España"
     mapa = {
         "gourmet espana": "Gourmet España",
         "ibersur": "Ibersur",
@@ -5784,12 +5789,121 @@ def _normalizar_extension(ext: str | None) -> str | None:
     return ext
 
 
+def optimizar_imagen_ficha(ruta: str, max_dimension: int = 1400, quality: int = 82) -> tuple[str, str]:
+    """Normaliza una imagen de ficha para web/PDF y devuelve ruta y extensión.
+
+    Se conserva el original cuando la versión WebP no ahorra espacio. Las
+    imágenes grandes se reducen sin deformarlas y se guardan como WebP para
+    evitar que una ficha cargue fotos de varios MB.
+    """
+    ruta = texto_seguro(ruta)
+    ext_original = _normalizar_extension(os.path.splitext(ruta)[1]) or ".jpg"
+    if not ruta or not os.path.isfile(ruta) or Image is None:
+        return ruta, ext_original
+    try:
+        with Image.open(ruta) as original:
+            original.load()
+            ancho, alto = original.size
+            imagen = original.copy()
+            if max(ancho, alto) > max_dimension:
+                imagen.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+            # WebP conserva transparencia; RGB evita incluir perfiles pesados
+            # de PNG/JPEG que no aportan a la ficha o al PDF.
+            if imagen.mode not in {"RGB", "RGBA"}:
+                imagen = imagen.convert("RGBA" if "transparency" in original.info else "RGB")
+            destino = os.path.splitext(ruta)[0] + ".webp"
+            temporal = destino + ".tmp"
+            imagen.save(temporal, format="WEBP", quality=quality, method=6)
+        tam_original = os.path.getsize(ruta)
+        tam_optimizado = os.path.getsize(temporal)
+        # Se sustituye cuando hubo reducción de dimensiones o el WebP ahorra
+        # espacio. Las fotos ya optimizadas se mantienen intactas.
+        se_redujo = max(ancho, alto) > max_dimension
+        if se_redujo or tam_optimizado < tam_original:
+            if os.path.normcase(os.path.abspath(destino)) != os.path.normcase(os.path.abspath(ruta)):
+                try:
+                    os.remove(ruta)
+                except OSError:
+                    pass
+            os.replace(temporal, destino)
+            return destino, ".webp"
+        os.remove(temporal)
+    except Exception:
+        try:
+            if os.path.isfile((os.path.splitext(ruta)[0] + ".webp.tmp")):
+                os.remove(os.path.splitext(ruta)[0] + ".webp.tmp")
+        except OSError:
+            pass
+    return ruta, ext_original
+
+
 def _ruta_ficha_desde_db(empresa: str, cip: str, extension: str | None) -> str | None:
     ext = _normalizar_extension(extension)
     if not ext:
         return None
     empresa_dir = normalizar_empresa_para_carpeta(empresa)
     return ruta_fichas(empresa_dir, str(cip), f"principal{ext}")
+
+
+def _recuperar_imagen_de_otra_empresa(cur, empresa: str, cip: str, ficha: dict) -> dict:
+    """Copia la imagen de otra empresa sólo cuando la ficha actual no tiene una.
+
+    Las fichas técnicas comparten la información del producto, pero la imagen
+    se guarda por empresa. Esta recuperación evita catálogos vacíos sin
+    reemplazar una imagen propia existente.
+    """
+    if not ficha or not empresa or not cip:
+        return ficha
+    actual = resolver_imagenes_producto(ficha).get("principal")
+    if actual and os.path.isfile(actual):
+        return ficha
+    cur.execute(
+        """
+        SELECT empresa, extension, imagen_path
+        FROM productos_ficha
+        WHERE cip = %s AND empresa <> %s AND COALESCE(activo, 1) = 1
+        ORDER BY fecha_actualizacion DESC, id DESC
+        """,
+        (str(cip), str(empresa)),
+    )
+    fuente = ""
+    for candidata in cur.fetchall() or []:
+        candidata = dict(candidata)
+        ruta = texto_seguro(candidata.get("imagen_path"))
+        for posible in rutas_equivalentes_ficha(ruta):
+            if os.path.isfile(posible):
+                fuente = posible
+                break
+        if fuente:
+            break
+        carpeta = ruta_fichas(normalizar_empresa_para_carpeta(candidata.get("empresa") or ""), str(cip))
+        for ext in (".webp", ".png", ".jpg", ".jpeg"):
+            posible = os.path.join(carpeta, f"principal{ext}")
+            if os.path.isfile(posible):
+                fuente = posible
+                break
+        if fuente:
+            break
+    if not fuente:
+        return ficha
+    ext = os.path.splitext(fuente)[1].lower() or ".webp"
+    destino = ruta_fichas(normalizar_empresa_para_carpeta(empresa), str(cip), f"principal{ext}")
+    try:
+        os.makedirs(os.path.dirname(destino), exist_ok=True)
+        shutil.copy2(fuente, destino)
+        destino, ext = optimizar_imagen_ficha(destino)
+        cur.execute(
+            "UPDATE productos_ficha SET imagen_path = %s, extension = %s, fecha_actualizacion = NOW() WHERE empresa = %s AND cip = %s",
+            (destino, ext, str(empresa), str(cip)),
+        )
+        ficha["imagen_path"] = destino
+        ficha["extension"] = ext
+        ficha["imagen_recuperada_de_otra_empresa"] = True
+    except Exception:
+        # No afecta la consulta: la ficha sigue disponible aunque la copia no
+        # pueda escribirse por permisos o por una imagen dañada.
+        pass
+    return ficha
 
 
 def obtener_ficha_base_db(cip: str) -> dict | None:
@@ -6086,6 +6200,8 @@ def obtener_ficha_producto_nueva(empresa: str, cip: str):
         )
         ficha = _mapear_ficha_row(cur.fetchone())
         ficha = _completar_ficha_con_datos_compartidos(cur, ficha)
+        ficha = _recuperar_imagen_de_otra_empresa(cur, empresa, str(cip), ficha)
+        conn.commit()
         return enriquecer_imagenes_ficha(ficha)
     finally:
         if conn:
@@ -6722,8 +6838,10 @@ def admin_api_guardar_ficha(
             update={
                 "empresa": empresa_destino,
                 "empresas_relacionadas": seleccionadas,
-                "extension": payload.extension if empresa_destino == empresa_actual else (existente.get("extension") or payload.extension),
-                "imagen_path": payload.imagen_path if empresa_destino == empresa_actual else (existente.get("imagen_path") or payload.imagen_path),
+                # An associated company may be saved before its image is
+                # uploaded. Do not attach another company's file path here.
+                "extension": payload.extension if empresa_destino == empresa_actual else existente.get("extension"),
+                "imagen_path": payload.imagen_path if empresa_destino == empresa_actual else existente.get("imagen_path"),
                 "activo": 1,
             }
         )
@@ -6815,6 +6933,7 @@ def admin_api_subir_imagen(
     contenido = archivo.file.read()
     with open(destino, "wb") as f:
         f.write(contenido)
+    destino, ext = optimizar_imagen_ficha(destino)
 
     payload = ProductoFichaIn(
         empresa=empresa,

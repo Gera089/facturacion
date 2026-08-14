@@ -202,6 +202,21 @@ def _clean_value(key: str, value):
             return float(str(text).replace(",", "."))
         except Exception:
             return 0.0
+    if key == "especial":
+        # Excel entrega las celdas con formato porcentaje como su valor
+        # decimal interno (16% llega como 0.16). Esta columna no es un
+        # importe: es el nombre de la lista de precios, por lo que se
+        # conserva su etiqueta visible.
+        if re.fullmatch(r"[+-]?(?:\d+\.\d+|\.\d+)", text):
+            try:
+                decimal = float(text.replace(",", "."))
+                if 0 < decimal < 1:
+                    porcentaje = decimal * 100
+                    etiqueta = f"{porcentaje:.10f}".rstrip("0").rstrip(".")
+                    return f"{etiqueta}%"
+            except Exception:
+                pass
+        return text
     if key == "numero":
         try:
             num = float(text)

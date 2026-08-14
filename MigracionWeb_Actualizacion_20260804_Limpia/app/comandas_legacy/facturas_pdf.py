@@ -91,7 +91,9 @@ def db_get_factura_detalle(factura_id: int) -> list[dict]:
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT cip, descripcion, cantidad, piezas, precio
+            SELECT cip, descripcion, cantidad, piezas, precio,
+                   COALESCE(descuento_pct, 0) AS descuento_pct,
+                   COALESCE(descuento_importe, 0) AS descuento_importe
             FROM factura_detalle
             WHERE factura_id = %s
             ORDER BY id ASC
@@ -150,7 +152,7 @@ def db_get_productos_info_por_cips(cips: list[str], empresa: str) -> dict:
         # 1) Productos base
         placeholders = ",".join(["%s"] * len(cips))
         cur.execute(f"""
-            SELECT cip, unidad, codigo_barras
+            SELECT cip, unidad, codigo_barras, descuento
             FROM productos
             WHERE cip IN ({placeholders})
         """, tuple(cips))
@@ -256,6 +258,8 @@ def factura_pdf(folio: str):
         info_prod = productos_info.get(cip, {})
         unidad = info_prod.get("unidad", "")
         codigo_barras = info_prod.get("codigo_barras", "")
+        indicador_descuento = str(info_prod.get("descuento") or "").strip().lower()
+        aplica_descuento = indicador_descuento in {"si", "sí", "s", "1", "true", "t", "yes", "y"}
 
         cantidad = float(p.get("cantidad") or 0)
         precio = float(p.get("precio") or 0)
@@ -265,11 +269,15 @@ def factura_pdf(folio: str):
             "cip": cip,
             "descripcion": p.get("descripcion") or "",
             "cantidad": cantidad,
-            "piezas": int(float(p.get("piezas") or 0)),
+            "piezas": float(p.get("piezas") or 0),
             "precio": precio,
             "total": total_linea,
             "unidad": unidad,
             "codigo_barras": codigo_barras,
+            # Una vez guardada, la partida conserva su propio descuento.
+            # Las facturas históricas sin esta columna siguen usando el
+            # indicador del catálogo como compatibilidad.
+            "descuento_pct": float(p.get("descuento_pct") or 0) if float(p.get("descuento_pct") or 0) > 0 else (float(factura.get("descuento_pct") or 0) if aplica_descuento else 0.0),
         })
 
     payload = {

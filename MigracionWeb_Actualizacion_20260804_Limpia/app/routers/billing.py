@@ -1415,9 +1415,34 @@ def delete_invoice(invoice_id: int, user=Depends(require_user)):
             raise HTTPException(status_code=404, detail="Factura no encontrada.")
         cursor.execute("SHOW TABLES LIKE 'cfdi_emitidos'")
         if cursor.fetchone():
-            cursor.execute("SELECT id FROM cfdi_emitidos WHERE factura_id=%s LIMIT 1", (invoice_id,))
+            # También protege facturas que pertenezcan a un CFDI consolidado.
+            cursor.execute(
+                """SELECT ce.id
+                   FROM cfdi_emitidos ce
+                   WHERE (
+                        ce.factura_id=%s
+                        OR EXISTS (
+                            SELECT 1 FROM cfdi_consolidacion_facturas ccf
+                            WHERE ccf.cfdi_emitido_id=ce.id AND ccf.factura_id=%s
+                        )
+                   )
+                   AND COALESCE(UPPER(TRIM(ce.estatus_cfdi)), '') NOT IN ('CANCELADO', 'CANCELADA')
+                   LIMIT 1""",
+                (invoice_id, invoice_id),
+            )
             if cursor.fetchone():
-                raise HTTPException(status_code=409, detail="No se puede eliminar una factura con CFDI emitido. Use el flujo de cancelación fiscal.")
+                raise HTTPException(status_code=409, detail="No se puede eliminar una factura incluida en un CFDI vigente. Cancele primero el CFDI fiscal.")
+        # Si no hay CFDI vigente, elimina los vínculos residuales antes de
+        # borrar el folio, sin dejar asociaciones inválidas en Mío.
+        cursor.execute("SHOW TABLES LIKE 'cfdi_consolidacion_facturas'")
+        if cursor.fetchone():
+            cursor.execute("DELETE FROM cfdi_consolidacion_facturas WHERE factura_id=%s", (invoice_id,))
+        cursor.execute("SHOW TABLES LIKE 'timbrado_queue'")
+        if cursor.fetchone():
+            cursor.execute("DELETE FROM timbrado_queue WHERE factura_id=%s", (invoice_id,))
+        cursor.execute("SHOW TABLES LIKE 'timbrado_factura_addenda_campos'")
+        if cursor.fetchone():
+            cursor.execute("DELETE FROM timbrado_factura_addenda_campos WHERE factura_id=%s", (invoice_id,))
         cursor.execute("DELETE FROM factura_detalle WHERE factura_id=%s", (invoice_id,))
         cursor.execute("DELETE FROM facturas WHERE id=%s", (invoice_id,))
         conn.commit()

@@ -918,6 +918,7 @@
                   <button id="collections-nc-btn" type="button" class="mio-action mio-orange">Nota cr&eacute;dito</button>
                   <button id="collections-bank-btn" type="button" class="secondary-button col-action-bank">Cuentas bancarias</button>
                   <button id="collections-import-btn" type="button" class="secondary-button col-action-import">Importar saldos</button>
+                  <button id="collections-import-cfdi-btn" type="button" class="secondary-button col-action-import">Importar CFDI</button>
                   <button id="collections-refresh" type="button" class="secondary-button col-action-refresh">Actualizar</button>
                 </div>
               </div>
@@ -983,7 +984,7 @@
                 <span class="col-cache-status muted" style="margin-left:12px;font-size:12px"></span>
               </div>
               <div class="table-wrap"><table class="col-cartera-table"><thead><tr>
-                <th>Factura</th><th>Empresa</th><th>Cliente</th><th>Nombre</th><th>Fecha</th>
+                <th>Interno / fiscal</th><th>Empresa</th><th>Cliente</th><th>Nombre</th><th>Fecha</th>
                 <th>Vencimiento</th><th>D&iacute;as vencido</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Estatus</th><th>Vendedor</th>
               </tr></thead><tbody></tbody></table></div>
             </div>
@@ -1084,7 +1085,7 @@
               </div>
               <div class="toolbar-line"><span class="col-pv-summary muted">Cargando...</span></div>
               <div class="table-wrap"><table class="col-pv-table"><thead><tr>
-                <th>Factura</th><th>Empresa</th><th>Cliente</th><th>Nombre</th><th>Fecha</th>
+                <th>Interno / fiscal</th><th>Empresa</th><th>Cliente</th><th>Nombre</th><th>Fecha</th>
                 <th>Vencimiento</th><th>Total</th><th>Saldo</th><th>Vendedor</th>
               </tr></thead><tbody></tbody></table></div>
             </div>
@@ -1106,7 +1107,7 @@
               </div>
               <div id="col-cte-resumen"></div>
               <div class="table-wrap"><table class="col-cte-table"><thead><tr>
-                <th>Factura</th><th>Fecha</th><th>Vencimiento</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Estatus</th>
+                <th>Interno / fiscal</th><th>Fecha</th><th>Vencimiento</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Estatus</th>
               </tr></thead><tbody></tbody></table></div>
               <h4 style="margin-top:16px">Recibos / Pagos</h4>
               <div class="table-wrap"><table class="col-cte-recibos-table"><thead><tr>
@@ -1730,10 +1731,22 @@
                     <div><label>Estado</label><input id="timb-cfg-est" class="form-input" /></div>
                     <div><label>Pais</label><input id="timb-cfg-pais" class="form-input" value="Mexico" /></div>
                     <div style="grid-column:span 2"><label>Logo para CFDI y folio interno</label><div style="display:flex;gap:6px"><select id="timb-cfg-logo" class="form-input" style="flex:1"></select><button type="button" class="secondary-button" onclick="subirLogoEmpresaTimbrado()">Subir logo</button></div><div style="margin-top:6px"><img id="timb-cfg-logo-preview" alt="Vista previa del logo" style="max-width:160px;max-height:60px;object-fit:contain;display:none;border:1px solid #d7e0ec;border-radius:4px;padding:3px;background:white"></div></div>
-                    <div><label>Serie CFDI</label><input id="timb-cfg-serie" class="form-input" placeholder="Ej. CFDI" /></div>
-                    <div><label>Folio siguiente</label><input id="timb-cfg-folio" class="form-input" placeholder="Se usara en la proxima factura" /></div>
+                    <div><label>Serie facturas</label><input id="timb-cfg-serie" class="form-input" placeholder="Ej. CFDI" /></div>
+                    <div><label>Folio siguiente facturas</label><input id="timb-cfg-folio" class="form-input" placeholder="Proxima factura" /></div>
                     <div><label>Serie complemento pago</label><input id="timb-cfg-serie-pago" class="form-input" placeholder="PAG" /></div>
+                    <div><label>Folio siguiente complemento</label><input id="timb-cfg-folio-pago" class="form-input" placeholder="1" /></div>
                     <div><label>Serie notas credito</label><input id="timb-cfg-serie-nc" class="form-input" placeholder="NC" /></div>
+                    <div><label>Folio siguiente nota credito</label><input id="timb-cfg-folio-nc" class="form-input" placeholder="1" /></div>
+                    <div><label>NC No. identificacion</label><input id="timb-cfg-nc-noid" class="form-input" placeholder="NC006 / NCD" /></div>
+                    <div><label>NC clave unidad</label><input id="timb-cfg-nc-clave-unidad" class="form-input" placeholder="ACT / H87" /></div>
+                    <div><label>NC unidad</label><input id="timb-cfg-nc-unidad" class="form-input" placeholder="pz" /></div>
+                    <div style="grid-column:span 2"><label>NC descripcion</label><input id="timb-cfg-nc-desc" class="form-input" placeholder="DESCUENTO SOBRE VENTAS" /></div>
+                    <div><label>NC metodo si forma 99</label>
+                      <select id="timb-cfg-nc-metodo-99" class="form-input">
+                        <option value="PPD">PPD - Pago en parcialidades o diferido</option>
+                        <option value="PUE">PUE - Pago en una sola exhibicion</option>
+                      </select>
+                    </div>
                     <div><label>Proveedor</label>
                       <select id="timb-cfg-prov" class="form-input">
                         <option value="">-- Seleccionar --</option>
@@ -2961,6 +2974,28 @@
                 <span id="col-pay-saldo-disponible" class="muted" style="align-self:center">$0.00</span>
               </div>
             </div>
+            <div id="col-pay-nc-concepto-box" class="desktop-fields desktop-fields-4" style="display:none;margin-top:10px">
+              <div class="form-field">
+                <label>Concepto nota de credito</label>
+                <select id="col-pay-nc-concepto"></select>
+              </div>
+              <div class="form-field">
+                <label>No. identificacion</label>
+                <input id="col-pay-nc-noid" readonly style="background:#f3f4f6;cursor:default">
+              </div>
+              <div class="form-field">
+                <label>Unidad</label>
+                <input id="col-pay-nc-unidad" readonly style="background:#f3f4f6;cursor:default">
+              </div>
+              <div class="form-field">
+                <label>Clave unidad SAT</label>
+                <input id="col-pay-nc-clave-unidad" readonly style="background:#f3f4f6;cursor:default">
+              </div>
+              <div class="form-field span-4">
+                <label>Descripcion fiscal</label>
+                <input id="col-pay-nc-desc" readonly style="background:#f3f4f6;cursor:default">
+              </div>
+            </div>
           </section>
           <section class="desktop-group">
             <h4>Aplicar a facturas</h4>
@@ -3093,7 +3128,10 @@
             </div>
           </section>
           <section class="desktop-group col-import-data-group">
-            <h4>Datos (Excel / pegar filas)</h4>
+            <div class="section-title-row" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+              <h4 style="margin:0">Datos (Excel / pegar filas)</h4>
+              <button id="col-import-plantilla" type="button" class="secondary-button">Descargar plantilla Excel</button>
+            </div>
             <div class="desktop-fields desktop-fields-1">
               <div class="form-field">
                 <label>Archivo Excel o CSV</label>
@@ -3104,8 +3142,8 @@
                 <input id="col-import-xml-zip" type="file" accept=".zip">
               </div>
               <div class="form-field col-import-rows-field">
-                <label>Pegar filas (factura, cliente, nombre, fecha, vencimiento, total, saldo, vendedor, xml)</label>
-                <textarea id="col-import-rows" rows="8" placeholder="factura&#9;cliente&#9;nombre&#9;fecha&#9;vencimiento&#9;total&#9;saldo&#9;vendedor&#9;xml"></textarea>
+                <label>Pegar filas (factura, cliente, nombre, fecha, vencimiento, total, saldo, vendedor, xml, uuid)</label>
+                <textarea id="col-import-rows" rows="8" placeholder="factura&#9;cliente&#9;nombre&#9;fecha&#9;vencimiento&#9;total&#9;saldo&#9;vendedor&#9;xml&#9;uuid"></textarea>
               </div>
             </div>
           </section>
@@ -3113,6 +3151,56 @@
         <div class="modal-actions">
           <span id="col-import-message" class="muted"></span>
           <button type="submit">Importar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Importar CFDI externos de cobranza -->
+  <div id="col-import-cfdi-modal" class="modal hidden modal-front">
+    <div class="modal-card modal-card-large">
+      <div class="modal-head">
+        <div>
+          <p class="section-kicker">Cobranza</p>
+          <h3>Importar CFDI externos</h3>
+        </div>
+        <button id="col-import-cfdi-close" type="button" class="close-button">&times; Cerrar</button>
+      </div>
+      <form id="col-import-cfdi-form" class="customer-form">
+        <div class="desktop-form-scroll">
+          <section class="desktop-group">
+            <h4>Configuraci&oacute;n</h4>
+            <div class="desktop-fields desktop-fields-2">
+              <div class="form-field">
+                <label>Empresa predeterminada</label>
+                <select id="col-import-cfdi-empresa"></select>
+              </div>
+              <div class="form-field">
+                <label>ZIP con carpeta comprobantes / XML</label>
+                <input id="col-import-cfdi-xml-zip" type="file" accept=".zip" required>
+              </div>
+            </div>
+          </section>
+          <section class="desktop-group">
+            <div class="section-title-row" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+              <h4 style="margin:0">Datos del Excel</h4>
+              <button id="col-import-cfdi-plantilla" type="button" class="secondary-button">Descargar plantilla Excel</button>
+            </div>
+            <div class="desktop-fields desktop-fields-1">
+              <div class="form-field">
+                <label>Archivo Excel o CSV</label>
+                <input id="col-import-cfdi-file" type="file" accept=".xlsx,.xls,.csv,.txt">
+              </div>
+              <div class="form-field col-import-rows-field">
+                <label>Pegar filas (tipo, empresa, cliente, recibo, factura, serie, folio, uuid, xml, monto, fecha)</label>
+                <textarea id="col-import-cfdi-rows" rows="7" placeholder="PAGO&#9;EZA2007&#9;100001&#9;PAG-20260801-0001&#9;EZ19&#9;REP&#9;1&#9;UUID...&#9;archivo.xml&#9;1000&#9;2026-08-01"></textarea>
+              </div>
+            </div>
+          </section>
+        </div>
+        <div class="modal-actions">
+          <span id="col-import-cfdi-message" class="muted"></span>
+          <button type="submit">Importar CFDI</button>
         </div>
       </form>
     </div>
@@ -3164,6 +3252,9 @@
       <div id="col-rec-content"></div>
       <div class="modal-actions" style="justify-content:center;gap:12px">
         <button id="col-rec-timbrar" type="button" class="primary-button">Timbrar complemento</button>
+        <button id="col-rec-email" type="button" class="secondary-button hidden">Enviar por correo</button>
+        <button id="col-rec-download-pdf" type="button" class="secondary-button hidden">Descargar PDF</button>
+        <button id="col-rec-download-xml" type="button" class="secondary-button hidden">Descargar XML</button>
         <button id="col-rec-sellar" type="button" class="secondary-button hidden">Prueba: sellado</button>
         <button id="col-rec-paquete" type="button" class="secondary-button hidden">Prueba: paquete PAC</button>
         <button id="col-rec-print" type="button" class="secondary-button">Imprimir</button>
@@ -3371,6 +3462,6 @@
   </div>
 
   <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
-  <script src="/static/app.js?v=20260813-mio-observaciones-1" charset="utf-8"></script>
+<script src="/static/app.js?v=20260814-cfdi-cobranza-import" charset="utf-8"></script>
 </body>
 </html>

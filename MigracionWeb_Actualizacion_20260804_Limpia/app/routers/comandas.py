@@ -21,8 +21,10 @@ router = APIRouter(prefix="/api/comandas", tags=["Comandas"])
 
 
 class ComandaProductoIn(BaseModel):
-    cip: str = Field(min_length=1, max_length=30)
-    descripcion: str = Field(min_length=1, max_length=255)
+    # Una fila informativa importada puede contener solamente Observaciones.
+    # Se conserva para respetar exactamente la posición del Excel.
+    cip: str = Field(default="", max_length=30)
+    descripcion: str = Field(default="", max_length=255)
     kgs: float = Field(default=0, ge=0)
     piezas: float = Field(default=0, ge=0)
     observaciones: str = Field(default="", max_length=200)
@@ -124,18 +126,37 @@ def _etiqueta_excel(value) -> str:
     return " ".join(texto.upper().replace(".", " ").replace(":", " ").replace("°", " ").split())
 
 
+def _columna_excel(etiquetas: dict[str, int], exactas: set[str], contiene: tuple[str, ...] = ()) -> int | None:
+    for etiqueta, columna in etiquetas.items():
+        if etiqueta in exactas:
+            return columna
+    for etiqueta, columna in etiquetas.items():
+        if any(fragmento in etiqueta for fragmento in contiene):
+            return columna
+    return None
+
+
 def _encabezado_productos(filas: list[tuple]) -> tuple[int, dict[str, int]] | tuple[None, dict]:
-    """Ubica la fila de encabezados aun si la plantilla tiene columnas adicionales."""
-    for indice, fila in enumerate(filas[:60]):
+    """Ubica la tabla de partidas en plantillas propias, portales y archivos copiados de Excel."""
+    for indice, fila in enumerate(filas[:120]):
         etiquetas = {_etiqueta_excel(valor): columna for columna, valor in enumerate(fila) if _etiqueta_excel(valor)}
-        if "CIP" not in etiquetas:
+        cip = _columna_excel(etiquetas, {"CIP", "CODIGO", "CLAVE", "SKU", "ARTICULO", "NO ARTICULO"}, ("CODIGO", "CLAVE", "ARTICULO", "SKU"))
+        if cip is None:
             continue
-        descripcion = next((columna for etiqueta, columna in etiquetas.items() if etiqueta in {"DESCRIPCION", "PRODUCTO"}), None)
-        piezas = next((columna for etiqueta, columna in etiquetas.items() if etiqueta in {"PIEZAS", "PZS", "PZAS"}), None)
-        kilos = next((columna for etiqueta, columna in etiquetas.items() if etiqueta in {"KGS", "KG", "KILOS"}), None)
-        observaciones = next((columna for etiqueta, columna in etiquetas.items() if etiqueta.startswith("OBSERV")), None)
+        descripcion = _columna_excel(etiquetas, {"DESCRIPCION", "PRODUCTO", "DESCRIPCION PRODUCTO", "NOMBRE GALACTICO", "NOMBRE"}, ("DESCRIPCION", "PRODUCTO", "NOMBRE GALACTICO"))
+        piezas = _columna_excel(etiquetas, {"PIEZAS", "PZS", "PZAS", "CANTIDAD", "CANT", "CANT PEDIDA"}, ("PIEZA", "PZA", "PZS", "CANT"))
+        kilos = _columna_excel(etiquetas, {"KGS", "KG", "KILOS", "KILOGRAMOS"}, ("KILO", " KGS", " KG"))
+        # Algunos portales (Mercado Libre) nombran la última columna como
+        # "Subtotal / Total". Es la única columna disponible para la nota de
+        # la partida, por lo que se conserva en Observaciones en vez de
+        # descartarla durante la importación.
+        observaciones = _columna_excel(
+            etiquetas,
+            {"OBSERVACIONES", "OBS", "NOTAS", "NOTA", "COMENTARIOS", "COMENTARIO", "SUBTOTAL / TOTAL", "SUBTOTAL TOTAL"},
+            ("OBSERV", "NOTA", "COMENT", "SUBTOTAL"),
+        )
         if descripcion is not None and (piezas is not None or kilos is not None):
-            return indice, {"cip": etiquetas["CIP"], "descripcion": descripcion, "piezas": piezas, "kgs": kilos, "observaciones": observaciones}
+            return indice, {"cip": cip, "descripcion": descripcion, "piezas": piezas, "kgs": kilos, "observaciones": observaciones}
     return None, {}
 
 
@@ -295,7 +316,10 @@ async def importar_plantilla(archivo: UploadFile = File(...), user: dict = Depen
             raise HTTPException(status_code=400, detail="No se encontró la tabla de productos (CIP, descripción y piezas/kgs).")
 
         # Plantilla Comanda / City / Ibersur: encabezado de captura fijo en B1:B4.
-        es_formato_comanda = not retail and _etiqueta_excel(filas[0][0] if filas and filas[0] else "") == "VENDEDOR"
+        es_formato_comanda = not retail and (
+            _etiqueta_excel(filas[0][0] if filas and filas[0] else "") == "VENDEDOR"
+            or _etiqueta_excel(sheet.title) == "COMANDA"
+        )
         vendedor = _texto_excel(sheet["B1"].value) if es_formato_comanda else ""
         empresa = _texto_excel(sheet["B2"].value) if es_formato_comanda else ""
         cliente_numero = _texto_excel(sheet["B3"].value) if es_formato_comanda else ""
@@ -324,6 +348,13 @@ async def importar_plantilla(archivo: UploadFile = File(...), user: dict = Depen
         vacias_seguidas = 0
         catalogo_retail = _catalogo_cip_retail(sheet) if retail else {}
         observaciones_sin_partida = []
+        encabezado_observaciones = _etiqueta_excel(
+            filas[indice_encabezado][columnas["observaciones"]]
+            if columnas.get("observaciones") is not None and columnas["observaciones"] < len(filas[indice_encabezado])
+            else ""
+        )
+        columna_resumen = "SUBTOTAL" in encabezado_observaciones or "TOTAL" in encabezado_observaciones
+        filas_vacias_resumen = 0
         for fila in filas[indice_encabezado + 1:]:
             descripcion = _texto_excel(fila[columnas["descripcion"]] if columnas["descripcion"] < len(fila) else "")
             kgs = _texto_excel(fila[columnas["kgs"]] if columnas.get("kgs") is not None and columnas["kgs"] < len(fila) else "")
@@ -332,8 +363,22 @@ async def importar_plantilla(archivo: UploadFile = File(...), user: dict = Depen
             cip_guardado = _texto_excel(fila[columnas["cip"]] if columnas["cip"] < len(fila) else "")
             cip = catalogo_retail.get(_etiqueta_excel(descripcion), cip_guardado) if retail else cip_guardado
             if not cip and not descripcion:
-                if observaciones:
+                # Las plantillas de portales cierran la columna "Subtotal / Total"
+                # con una fila de total. No es una observación logística y no debe
+                # terminar mezclada con la nota general de la comanda.
+                if observaciones and columna_resumen and productos:
+                    # Conserva los renglones vacíos intermedios y deja el texto
+                    # en su propia celda de Observaciones, tal como viene en Excel.
+                    productos.extend(
+                        {"cip": "", "descripcion": "", "kgs": "", "piezas": "", "observaciones": ""}
+                        for _ in range(filas_vacias_resumen)
+                    )
+                    productos.append({"cip": "", "descripcion": "", "kgs": "", "piezas": "", "observaciones": observaciones})
+                    filas_vacias_resumen = 0
+                elif observaciones:
                     observaciones_sin_partida.append(observaciones)
+                elif columna_resumen and productos:
+                    filas_vacias_resumen += 1
                 vacias_seguidas += 1
                 if vacias_seguidas >= 3:
                     break
@@ -343,6 +388,7 @@ async def importar_plantilla(archivo: UploadFile = File(...), user: dict = Depen
                     observaciones_sin_partida.append(observaciones)
                 continue
             vacias_seguidas = 0
+            filas_vacias_resumen = 0
             productos.append({
                 "cip": cip,
                 "descripcion": descripcion,
@@ -1233,8 +1279,13 @@ def eliminar_diario(payload: FoliosIn, user: dict = Depends(require_user)):
 
 @router.post("/guardar")
 def guardar_comanda(payload: ComandaGuardarIn, user: dict = Depends(require_user)):
-    productos = [p for p in payload.productos if p.cip.strip() and p.descripcion.strip() and (p.kgs > 0 or p.piezas > 0)]
-    if not productos: raise HTTPException(status_code=400, detail="Agrega al menos un producto con kilos o piezas.")
+    productos_reales = [p for p in payload.productos if p.cip.strip() and p.descripcion.strip() and (p.kgs > 0 or p.piezas > 0)]
+    if not productos_reales:
+        raise HTTPException(status_code=400, detail="Agrega al menos un producto con kilos o piezas.")
+    productos = [
+        p for p in payload.productos
+        if (p.cip.strip() and p.descripcion.strip() and (p.kgs > 0 or p.piezas > 0)) or p.observaciones.strip()
+    ]
     conn = get_legacy_connection(); cur = conn.cursor()
     try:
         folio = payload.folio.strip()

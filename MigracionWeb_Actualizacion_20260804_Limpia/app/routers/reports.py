@@ -22,6 +22,23 @@ def _auto_width(ws, factor=1.1, min_width=8):
         ws.column_dimensions[col_letter].width = max(max_len * factor + 1, min_width)
 
 
+def _fmt_cantidad(value, decimales=3):
+    try:
+        num = float(value or 0)
+    except Exception:
+        num = 0.0
+    if abs(num - round(num)) < 0.000001:
+        return str(int(round(num)))
+    return f"{num:.{decimales}f}".rstrip("0").rstrip(".")
+
+
+def _num_cantidad(value):
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
@@ -34,6 +51,24 @@ def _empresa_key(value):
 def _empresa_visible(value):
     key = _empresa_key(value)
     return key and not (key.startswith("TEST ") or key.startswith("PRUEBA ") or " CODEX" in key)
+
+
+def _empresa_visible_where(alias="f"):
+    campo = f"UPPER(REPLACE(COALESCE({alias}.empresa, ''), '_', ' '))"
+    return (
+        f"{campo} NOT LIKE 'TEST %' "
+        f"AND {campo} NOT LIKE 'PRUEBA %' "
+        f"AND {campo} NOT LIKE '% CODEX%'"
+    )
+
+
+def _factura_real_where(alias="f"):
+    folio = f"UPPER(TRIM(COALESCE({alias}.factura, '')))"
+    return (
+        f"{folio} NOT LIKE 'PRUEBA%' "
+        f"AND {folio} NOT LIKE 'TEST%' "
+        f"AND {folio} NOT LIKE '%FINKOK%PRUEBA%'"
+    )
 
 
 def _empresa_display(value):
@@ -62,7 +97,7 @@ def _consolidar_por_empresa(rows):
 
 
 def _build_facturas_where(empresa=None, cliente=None, producto=None, desde=None, hasta=None, anio=0, mes=0):
-    wheres = ["f.estatus = 'Activa'"]
+    wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f")]
     params = []
     if empresa:
         wheres.append("f.empresa = %s")
@@ -136,13 +171,13 @@ def dashboard_general(
 
         cur.execute(f"""
             SELECT fd.descripcion AS producto,
-                   SUM(fd.piezas) AS piezas,
+                   SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)) AS piezas,
                    COUNT(DISTINCT f.id) AS facturas,
-                   COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
+                   COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
             FROM facturas f
             JOIN factura_detalle fd ON fd.factura_id = f.id
             JOIN (
-                SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                 FROM factura_detalle fd2
                 GROUP BY fd2.factura_id
             ) inv ON inv.factura_id = f.id
@@ -210,18 +245,32 @@ def frecuencia_detalle(
         # Clients with purchase count in range
         cur.execute(f"""
             SELECT t.numero_cliente, t.empresa,
-                   COALESCE(ANY_VALUE(c.nombre), '') AS nombre,
+                   COALESCE(
+                       NULLIF(TRIM(ANY_VALUE(c.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(c_any.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(t.cliente_nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(t.consignatario)), ''),
+                       t.numero_cliente
+                   ) AS nombre,
                    t.compras
             FROM (
-                SELECT f.numero_cliente, f.empresa, COUNT(DISTINCT f.id) AS compras
+                SELECT f.numero_cliente, f.empresa,
+                       MAX(NULLIF(TRIM(f.cliente_nombre), '')) AS cliente_nombre,
+                       MAX(NULLIF(TRIM(f.consignatario), '')) AS consignatario,
+                       COUNT(DISTINCT f.id) AS compras
                 FROM facturas f
                 WHERE {where_sql}
                 GROUP BY f.numero_cliente, f.empresa
                 HAVING compras >= %s AND compras <= %s
             ) t
             LEFT JOIN clientes c
-              ON c.numero = t.numero_cliente
+              ON TRIM(CAST(c.numero AS CHAR)) = TRIM(CAST(t.numero_cliente AS CHAR))
              AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(t.empresa))
+            LEFT JOIN (
+                SELECT TRIM(CAST(numero AS CHAR)) AS numero, MAX(NULLIF(TRIM(nombre), '')) AS nombre
+                FROM clientes
+                GROUP BY TRIM(CAST(numero AS CHAR))
+            ) c_any ON c_any.numero = TRIM(CAST(t.numero_cliente AS CHAR))
             ORDER BY t.compras DESC, t.numero_cliente
         """, params + [compras_min, compras_max])
         clientes = cur.fetchall()
@@ -241,13 +290,13 @@ def frecuencia_detalle(
         # Top products (proportional factor)
         cur.execute(f"""
             SELECT fd.descripcion AS producto,
-                   SUM(fd.piezas) AS piezas,
+                   SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)) AS piezas,
                    COUNT(DISTINCT f.id) AS facturas,
-                   COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
+                   COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
             FROM facturas f
             JOIN factura_detalle fd ON fd.factura_id = f.id
             JOIN (
-                SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                 FROM factura_detalle fd2
                 GROUP BY fd2.factura_id
             ) inv ON inv.factura_id = f.id
@@ -262,27 +311,42 @@ def frecuencia_detalle(
         # NOTE: {freq_where} appears twice so params must be duplicated
         cur.execute(f"""
             SELECT p.cliente, p.empresa,
-                   COALESCE(ANY_VALUE(c.nombre), '') AS nombre,
+                   COALESCE(
+                       NULLIF(TRIM(ANY_VALUE(c.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(c_any.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(p.cliente_nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(p.consignatario)), ''),
+                       p.cliente
+                   ) AS nombre,
                    COALESCE(fc.total_compras, 0) AS compras,
                    COALESCE(fc.facturas, '') AS facturas,
                    SUM(p.piezas) AS total_piezas,
                    SUBSTRING_INDEX(GROUP_CONCAT(CONCAT('(', p.piezas, ' pzas) ', p.descripcion) ORDER BY p.total DESC SEPARATOR ' ||| '), ' ||| ', 5) AS productos_recomprados
             FROM (
                 SELECT f.numero_cliente AS cliente, f.empresa,
+                       MAX(NULLIF(TRIM(f.cliente_nombre), '')) AS cliente_nombre,
+                       MAX(NULLIF(TRIM(f.consignatario), '')) AS consignatario,
                        fd.descripcion,
-                       SUM(fd.piezas) AS piezas,
-                       COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
+                       SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)) AS piezas,
+                       COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
                 FROM facturas f
                 JOIN factura_detalle fd ON fd.factura_id = f.id
                 JOIN (
-                    SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                    SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                     FROM factura_detalle fd2
                     GROUP BY fd2.factura_id
                 ) inv ON inv.factura_id = f.id
                 WHERE {freq_where}
                 GROUP BY f.numero_cliente, f.empresa, fd.descripcion
             ) p
-            LEFT JOIN clientes c ON c.numero = p.cliente AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(p.empresa))
+            LEFT JOIN clientes c
+              ON TRIM(CAST(c.numero AS CHAR)) = TRIM(CAST(p.cliente AS CHAR))
+             AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(p.empresa))
+            LEFT JOIN (
+                SELECT TRIM(CAST(numero AS CHAR)) AS numero, MAX(NULLIF(TRIM(nombre), '')) AS nombre
+                FROM clientes
+                GROUP BY TRIM(CAST(numero AS CHAR))
+            ) c_any ON c_any.numero = TRIM(CAST(p.cliente AS CHAR))
             LEFT JOIN (
                 SELECT f.numero_cliente, f.empresa,
                        COUNT(DISTINCT f.id) AS total_compras,
@@ -299,11 +363,11 @@ def frecuencia_detalle(
         # Also get total_ventas per client within this group
         cur.execute(f"""
             SELECT f.numero_cliente AS cliente, f.empresa,
-                   COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total_ventas
+                   COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total_ventas
             FROM facturas f
             JOIN factura_detalle fd ON fd.factura_id = f.id
             JOIN (
-                SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                 FROM factura_detalle fd2
                 GROUP BY fd2.factura_id
             ) inv ON inv.factura_id = f.id
@@ -339,7 +403,7 @@ def indicadores_gerenciales(
     conn = get_legacy_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        wheres = ["f.estatus = 'Activa'"]
+        wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f")]
         params = []
         if empresa:
             wheres.append("f.empresa = %s")
@@ -397,7 +461,7 @@ def indicadores_gerenciales(
         growth = 0
         if desde and hasta:
             prev_params = [empresa] if empresa else []
-            prev_where = ["f.estatus = 'Activa'"]
+            prev_where = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f")]
             if empresa:
                 prev_where.append("f.empresa = %s")
             period_days = f"DATEDIFF(%s, %s)"
@@ -437,7 +501,7 @@ def top_clientes(
     conn = get_legacy_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        wheres = ["f.estatus = 'Activa'"]
+        wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f")]
         params = []
         if empresa:
             wheres.append("f.empresa = %s")
@@ -482,7 +546,7 @@ def top_productos(
     conn = get_legacy_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        wheres = ["f.estatus = 'Activa'"]
+        wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f")]
         params = []
         if empresa:
             wheres.append("f.empresa = %s")
@@ -497,9 +561,9 @@ def top_productos(
 
         cur.execute(f"""
             SELECT fd.descripcion AS producto,
-                   SUM(fd.piezas) AS piezas,
+                   SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)) AS piezas,
                    COUNT(DISTINCT f.id) AS facturas,
-                   COALESCE(SUM(fd.piezas * fd.precio), 0) AS total
+                   COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio), 0) AS total
             FROM facturas f
             JOIN factura_detalle fd ON fd.factura_id = f.id
             WHERE {where_sql}
@@ -523,7 +587,7 @@ def resumen_empresa(
     conn = get_legacy_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        wheres = ["f.estatus = 'Activa'"]
+        wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f")]
         params = []
         if anio:
             wheres.append("YEAR(f.fecha) = %s")
@@ -562,7 +626,7 @@ def reporte_cliente(
     conn = get_legacy_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        wheres = ["f.estatus = 'Activa'", "f.numero_cliente = %s"]
+        wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f"), "f.numero_cliente = %s"]
         params = [numero]
         if empresa:
             wheres.append("f.empresa = %s")
@@ -590,13 +654,13 @@ def reporte_cliente(
 
         cur.execute(f"""
             SELECT fd.descripcion AS producto,
-                   SUM(fd.piezas) AS piezas,
+                   SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)) AS piezas,
                    COUNT(DISTINCT f.id) AS facturas,
-                   COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
+                   COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
             FROM facturas f
             JOIN factura_detalle fd ON fd.factura_id = f.id
             JOIN (
-                SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                 FROM factura_detalle fd2
                 GROUP BY fd2.factura_id
             ) inv ON inv.factura_id = f.id
@@ -649,7 +713,7 @@ def reporte_producto(
     conn = get_legacy_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        wheres = ["f.estatus = 'Activa'", "fd.descripcion = %s"]
+        wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f"), "fd.descripcion = %s"]
         params = [producto]
         if empresa:
             wheres.append("f.empresa = %s")
@@ -665,12 +729,12 @@ def reporte_producto(
         cur.execute(f"""
             SELECT
                 COUNT(DISTINCT f.id) AS facturas,
-                COALESCE(SUM(fd.piezas), 0) AS piezas_vendidas,
-                COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
+                COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)), 0) AS piezas_vendidas,
+                COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
             FROM facturas f
             JOIN factura_detalle fd ON fd.factura_id = f.id
             JOIN (
-                SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                 FROM factura_detalle fd2
                 GROUP BY fd2.factura_id
             ) inv ON inv.factura_id = f.id
@@ -683,7 +747,7 @@ def reporte_producto(
 
         # Apply proportional discount factor (like desktop app)
         cli_params = [producto]
-        cli_wheres = ["fd.descripcion = %s", "f.estatus = 'Activa'"]
+        cli_wheres = ["fd.descripcion = %s", "f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f")]
         if empresa:
             cli_wheres.append("f.empresa = %s")
             cli_params.append(empresa)
@@ -696,21 +760,34 @@ def reporte_producto(
         cli_where_sql = " AND ".join(cli_wheres)
         cur.execute(f"""
             SELECT t.cliente, t.empresa,
-                   COALESCE(ANY_VALUE(c.nombre), '') AS nombre,
+                   COALESCE(
+                       NULLIF(TRIM(ANY_VALUE(c.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(c_any.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(t.cliente_nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(t.consignatario)), ''),
+                       t.cliente
+                   ) AS nombre,
                    SUM(t.monto_real) AS total_ventas
             FROM (
-                SELECT f.numero_cliente AS cliente, f.empresa,
-                       fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0) AS monto_real
+                SELECT f.numero_cliente AS cliente, f.empresa, f.cliente_nombre, f.consignatario,
+                       COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0) AS monto_real
                 FROM facturas f
                 JOIN factura_detalle fd ON fd.factura_id = f.id
                 JOIN (
-                    SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                    SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                     FROM factura_detalle fd2
                     GROUP BY fd2.factura_id
                 ) inv ON inv.factura_id = f.id
                 WHERE {cli_where_sql}
             ) t
-            LEFT JOIN clientes c ON c.numero = t.cliente AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(t.empresa))
+            LEFT JOIN clientes c
+              ON TRIM(CAST(c.numero AS CHAR)) = TRIM(CAST(t.cliente AS CHAR))
+             AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(t.empresa))
+            LEFT JOIN (
+                SELECT TRIM(CAST(numero AS CHAR)) AS numero, MAX(NULLIF(TRIM(nombre), '')) AS nombre
+                FROM clientes
+                GROUP BY TRIM(CAST(numero AS CHAR))
+            ) c_any ON c_any.numero = TRIM(CAST(t.cliente AS CHAR))
             GROUP BY t.cliente, t.empresa
             ORDER BY total_ventas DESC
             LIMIT 8
@@ -719,11 +796,27 @@ def reporte_producto(
 
         cur.execute(f"""
             SELECT f.id, f.factura AS folio, f.fecha, f.empresa, f.numero_cliente,
-                   COALESCE(c.nombre, '') AS cliente_nombre,
+                   COALESCE(
+                       NULLIF(TRIM(c.nombre), ''),
+                       NULLIF(TRIM(c_any.nombre), ''),
+                       NULLIF(TRIM(f.cliente_nombre), ''),
+                       NULLIF(TRIM(f.consignatario), ''),
+                       f.numero_cliente
+                   ) AS cliente_nombre,
+                   COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) AS cantidad_producto,
+                   fd.precio AS precio_producto,
+                   fd.importe AS importe_producto,
                    f.estatus, f.total
             FROM facturas f
             JOIN factura_detalle fd ON fd.factura_id = f.id
-            LEFT JOIN clientes c ON c.numero = f.numero_cliente AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(f.empresa))
+            LEFT JOIN clientes c
+              ON TRIM(CAST(c.numero AS CHAR)) = TRIM(CAST(f.numero_cliente AS CHAR))
+             AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(f.empresa))
+            LEFT JOIN (
+                SELECT TRIM(CAST(numero AS CHAR)) AS numero, MAX(NULLIF(TRIM(nombre), '')) AS nombre
+                FROM clientes
+                GROUP BY TRIM(CAST(numero AS CHAR))
+            ) c_any ON c_any.numero = TRIM(CAST(f.numero_cliente AS CHAR))
             WHERE {where_sql}
             ORDER BY f.fecha DESC
         """, params)
@@ -750,18 +843,24 @@ def productos_facturados(
     conn = get_legacy_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        wheres = ["f.estatus = 'Activa'"]
+        wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f")]
         params = []
         if empresa:
             wheres.append("f.empresa = %s")
             params.append(empresa)
         if q:
-            wheres.append("(fd.descripcion LIKE %s OR p.cip LIKE %s)")
-            params.append(f"%{q}%")
-            params.append(f"%{q}%")
+            tokens = [token.strip() for token in q.split() if token.strip()]
+            for token in tokens:
+                wheres.append(
+                    "(UPPER(COALESCE(fd.descripcion, '')) LIKE %s "
+                    "OR UPPER(COALESCE(fd.cip, '')) LIKE %s "
+                    "OR UPPER(COALESCE(p.cip, '')) LIKE %s)"
+                )
+                token_like = f"%{token.upper()}%"
+                params.extend([token_like, token_like, token_like])
         where_sql = " AND ".join(wheres)
         cur.execute(f"""
-            SELECT DISTINCT fd.descripcion, IFNULL(p.cip, '') AS cip
+            SELECT DISTINCT fd.descripcion, COALESCE(NULLIF(fd.cip, ''), p.cip, '') AS cip
             FROM factura_detalle fd
             JOIN facturas f ON f.id = fd.factura_id
             LEFT JOIN productos p ON p.descripcion = fd.descripcion OR p.cip = fd.descripcion
@@ -785,7 +884,7 @@ def clientes_reporte(
     conn = get_legacy_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        wheres = ["f.estatus = 'Activa'"]
+        wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f")]
         params = []
         if empresa:
             wheres.append("f.empresa = %s")
@@ -822,18 +921,32 @@ def _fetch_frecuencia_data(compras_min, compras_max, empresa, cliente, producto,
 
         cur.execute(f"""
             SELECT t.numero_cliente, t.empresa,
-                   COALESCE(ANY_VALUE(c.nombre), '') AS nombre,
+                   COALESCE(
+                       NULLIF(TRIM(ANY_VALUE(c.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(c_any.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(t.cliente_nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(t.consignatario)), ''),
+                       t.numero_cliente
+                   ) AS nombre,
                    t.compras
             FROM (
-                SELECT f.numero_cliente, f.empresa, COUNT(DISTINCT f.id) AS compras
+                SELECT f.numero_cliente, f.empresa,
+                       MAX(NULLIF(TRIM(f.cliente_nombre), '')) AS cliente_nombre,
+                       MAX(NULLIF(TRIM(f.consignatario), '')) AS consignatario,
+                       COUNT(DISTINCT f.id) AS compras
                 FROM facturas f
                 WHERE {where_sql}
                 GROUP BY f.numero_cliente, f.empresa
                 HAVING compras >= %s AND compras <= %s
             ) t
             LEFT JOIN clientes c
-              ON c.numero = t.numero_cliente
+              ON TRIM(CAST(c.numero AS CHAR)) = TRIM(CAST(t.numero_cliente AS CHAR))
              AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(t.empresa))
+            LEFT JOIN (
+                SELECT TRIM(CAST(numero AS CHAR)) AS numero, MAX(NULLIF(TRIM(nombre), '')) AS nombre
+                FROM clientes
+                GROUP BY TRIM(CAST(numero AS CHAR))
+            ) c_any ON c_any.numero = TRIM(CAST(t.numero_cliente AS CHAR))
             ORDER BY t.compras DESC, t.numero_cliente
         """, params + [compras_min, compras_max])
         clientes = cur.fetchall()
@@ -852,13 +965,13 @@ def _fetch_frecuencia_data(compras_min, compras_max, empresa, cliente, producto,
         # Top products
         cur.execute(f"""
             SELECT fd.descripcion AS producto,
-                   SUM(fd.piezas) AS piezas,
+                   SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)) AS piezas,
                    COUNT(DISTINCT f.id) AS facturas,
-                   COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
+                   COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
             FROM facturas f
             JOIN factura_detalle fd ON fd.factura_id = f.id
             JOIN (
-                SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                 FROM factura_detalle fd2
                 GROUP BY fd2.factura_id
             ) inv ON inv.factura_id = f.id
@@ -875,27 +988,42 @@ def _fetch_frecuencia_data(compras_min, compras_max, empresa, cliente, producto,
         except: pass
         cur.execute(f"""
             SELECT p.cliente, p.empresa,
-                   COALESCE(ANY_VALUE(c.nombre), '') AS nombre,
+                   COALESCE(
+                       NULLIF(TRIM(ANY_VALUE(c.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(c_any.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(p.cliente_nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(p.consignatario)), ''),
+                       p.cliente
+                   ) AS nombre,
                    COALESCE(fc.total_compras, 0) AS compras,
                    COALESCE(fc.facturas, '') AS facturas,
                    SUM(p.piezas) AS total_piezas,
                    GROUP_CONCAT(CONCAT('(', p.piezas, ' pzas) ', p.descripcion) ORDER BY p.total DESC SEPARATOR ' ||| ') AS productos_recomprados
             FROM (
                 SELECT f.numero_cliente AS cliente, f.empresa,
+                       MAX(NULLIF(TRIM(f.cliente_nombre), '')) AS cliente_nombre,
+                       MAX(NULLIF(TRIM(f.consignatario), '')) AS consignatario,
                        fd.descripcion,
-                       SUM(fd.piezas) AS piezas,
-                       COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
+                       SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)) AS piezas,
+                       COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
                 FROM facturas f
                 JOIN factura_detalle fd ON fd.factura_id = f.id
                 JOIN (
-                    SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                    SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                     FROM factura_detalle fd2
                     GROUP BY fd2.factura_id
                 ) inv ON inv.factura_id = f.id
                 WHERE {freq_where}
                 GROUP BY f.numero_cliente, f.empresa, fd.descripcion
             ) p
-            LEFT JOIN clientes c ON c.numero = p.cliente AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(p.empresa))
+            LEFT JOIN clientes c
+              ON TRIM(CAST(c.numero AS CHAR)) = TRIM(CAST(p.cliente AS CHAR))
+             AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(p.empresa))
+            LEFT JOIN (
+                SELECT TRIM(CAST(numero AS CHAR)) AS numero, MAX(NULLIF(TRIM(nombre), '')) AS nombre
+                FROM clientes
+                GROUP BY TRIM(CAST(numero AS CHAR))
+            ) c_any ON c_any.numero = TRIM(CAST(p.cliente AS CHAR))
             LEFT JOIN (
                 SELECT f.numero_cliente, f.empresa,
                        COUNT(DISTINCT f.id) AS total_compras,
@@ -912,11 +1040,11 @@ def _fetch_frecuencia_data(compras_min, compras_max, empresa, cliente, producto,
         # Total ventas per client
         cur.execute(f"""
             SELECT f.numero_cliente AS cliente, f.empresa,
-                   COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total_ventas
+                   COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total_ventas
             FROM facturas f
             JOIN factura_detalle fd ON fd.factura_id = f.id
             JOIN (
-                SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                 FROM factura_detalle fd2
                 GROUP BY fd2.factura_id
             ) inv ON inv.factura_id = f.id
@@ -1176,7 +1304,7 @@ def frecuencia_detalle_export_pdf(
             Paragraph(str(c.get("nombre") or c.get("cliente", "")), cell_left),
             Paragraph(str(c.get("empresa", "")), cell_center),
             Paragraph(str(c["compras"]), cell_center),
-            Paragraph(str(int(c.get("total_piezas", 0))), cell_center),
+            Paragraph(_fmt_cantidad(c.get("total_piezas", 0)), cell_center),
             Paragraph(str(c.get("productos_recomprados", "")), cell_left),
             Paragraph(str(c.get("facturas", "")), cell_left),
         ])
@@ -1186,7 +1314,7 @@ def frecuencia_detalle_export_pdf(
     data.append([
         Paragraph("<b>Total</b>", cell_center),
         "", Paragraph(f"<b>{int(total_compras)}</b>", cell_center),
-        Paragraph(f"<b>{int(total_piezas)}</b>", cell_center), "", ""
+        Paragraph(f"<b>{_fmt_cantidad(total_piezas)}</b>", cell_center), "", ""
     ])
 
     table = Table(data, colWidths=[90, 40, 35, 35, 170, 190])
@@ -1245,13 +1373,13 @@ def _fetch_dashboard_data(empresa, cliente, producto, desde, hasta):
 
             cur.execute(f"""
                 SELECT fd.descripcion AS producto,
-                       SUM(fd.piezas) AS piezas,
+                       SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)) AS piezas,
                        COUNT(DISTINCT f.id) AS facturas,
-                       COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
+                       COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
                 FROM facturas f
                 JOIN factura_detalle fd ON fd.factura_id = f.id
                 JOIN (
-                    SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto
+                    SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto
                     FROM factura_detalle fd2
                     GROUP BY fd2.factura_id
                 ) inv ON inv.factura_id = f.id
@@ -1346,12 +1474,14 @@ def dashboard_export_excel(
 
     for ri, p in enumerate(top_productos):
         r = prod_start + 3 + ri
-        vals = [p.get("producto", ""), int(p.get("piezas", 0)), p["facturas"], p["total"]]
+        vals = [p.get("producto", ""), _num_cantidad(p.get("piezas", 0)), p["facturas"], p["total"]]
         for ci, v in enumerate(vals, 1):
             cell = ws1.cell(row=r, column=ci, value=v)
             cell.font = value_font; cell.border = thin_border
             if ci == 4:
                 cell.number_format = '#,##0.00'
+            elif ci == 2:
+                cell.number_format = '#,##0.###'
 
     # --- Charts (same sheet) ---
     from matplotlib import pyplot as plt
@@ -1474,7 +1604,7 @@ def dashboard_export_pdf(
     for p in top_productos:
         data2.append([
             Paragraph(str(p.get("producto", "")), cell_left),
-            Paragraph(str(int(p.get("piezas", 0))), cell_center),
+            Paragraph(_fmt_cantidad(p.get("piezas", 0)), cell_center),
             Paragraph(str(p["facturas"]), cell_center),
             Paragraph(f"${p['total']:,.2f}", cell_center),
         ])
@@ -1548,7 +1678,7 @@ def _fetch_reporte_cliente(numero, empresa, desde, hasta):
     conn = get_legacy_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        wheres = ["f.estatus = 'Activa'", "f.numero_cliente = %s"]
+        wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f"), "f.numero_cliente = %s"]
         params = [numero]
         if empresa:
             wheres.append("f.empresa = %s")
@@ -1574,11 +1704,11 @@ def _fetch_reporte_cliente(numero, empresa, desde, hasta):
 
         cur.execute(f"""
             SELECT fd.descripcion AS producto,
-                   SUM(fd.piezas) AS piezas,
+                   SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)) AS piezas,
                    COUNT(DISTINCT f.id) AS facturas,
-                   COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
+                   COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
             FROM facturas f JOIN factura_detalle fd ON fd.factura_id = f.id
-            JOIN (SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto FROM factura_detalle fd2 GROUP BY fd2.factura_id) inv ON inv.factura_id = f.id
+            JOIN (SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto FROM factura_detalle fd2 GROUP BY fd2.factura_id) inv ON inv.factura_id = f.id
             WHERE {where_sql} GROUP BY fd.descripcion ORDER BY total DESC
         """, params)
         productos = cur.fetchall()
@@ -1680,7 +1810,7 @@ def reporte_cliente_export_excel(
     for ri, p in enumerate(productos):
         r = prod_header_row + 2 + ri
         ws.cell(row=r, column=1, value=p['producto']).font = value_font; ws.cell(row=r, column=1).border = thin_border
-        ws.cell(row=r, column=2, value=int(p['piezas'])).font = value_font; ws.cell(row=r, column=2).border = thin_border
+        ws.cell(row=r, column=2, value=_num_cantidad(p['piezas'])).font = value_font; ws.cell(row=r, column=2).number_format = '#,##0.###'; ws.cell(row=r, column=2).border = thin_border
         ws.cell(row=r, column=3, value=p['facturas']).font = value_font; ws.cell(row=r, column=3).border = thin_border
         ws.cell(row=r, column=4, value=p['total']).font = value_font; ws.cell(row=r, column=4).number_format = '#,##0.00'; ws.cell(row=r, column=4).border = thin_border
     _auto_width(ws)
@@ -1835,7 +1965,7 @@ def reporte_cliente_export_pdf(
         c.drawString(40, y, "Productos"); y -= 20
         p_data = [["Producto", "Piezas", "Facturas", "Total"]]
         for p in productos:
-            p_data.append([str(p['producto']), str(int(p['piezas'])), str(p['facturas']), f"${p['total']:,.2f}"])
+            p_data.append([str(p['producto']), _fmt_cantidad(p['piezas']), str(p['facturas']), f"${p['total']:,.2f}"])
         y = draw_table(p_data, [300, 50, 50, 80], y)
         if y < 150: c.showPage(); encabezado(); y = height - 80
 
@@ -1861,7 +1991,7 @@ def _fetch_reporte_producto(producto, empresa, desde, hasta):
     conn = get_legacy_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        wheres = ["f.estatus = 'Activa'", "fd.descripcion = %s"]
+        wheres = ["f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f"), "fd.descripcion = %s"]
         params = [producto]
         if empresa:
             wheres.append("f.empresa = %s")
@@ -1876,10 +2006,10 @@ def _fetch_reporte_producto(producto, empresa, desde, hasta):
 
         cur.execute(f"""
             SELECT COUNT(DISTINCT f.id) AS facturas,
-                   COALESCE(SUM(fd.piezas), 0) AS piezas_vendidas,
-                   COALESCE(SUM(fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
+                   COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0)), 0) AS piezas_vendidas,
+                   COALESCE(SUM(COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0)), 0) AS total
             FROM facturas f JOIN factura_detalle fd ON fd.factura_id = f.id
-            JOIN (SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto FROM factura_detalle fd2 GROUP BY fd2.factura_id) inv ON inv.factura_id = f.id
+            JOIN (SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto FROM factura_detalle fd2 GROUP BY fd2.factura_id) inv ON inv.factura_id = f.id
             WHERE {where_sql}
         """, params)
         resumen = cur.fetchone()
@@ -1887,7 +2017,7 @@ def _fetch_reporte_producto(producto, empresa, desde, hasta):
             return None, None, None
 
         cli_params = [producto]
-        cli_wheres = ["fd.descripcion = %s", "f.estatus = 'Activa'"]
+        cli_wheres = ["fd.descripcion = %s", "f.estatus = 'Activa'", _empresa_visible_where("f"), _factura_real_where("f")]
         if empresa:
             cli_wheres.append("f.empresa = %s")
             cli_params.append(empresa)
@@ -1899,22 +2029,54 @@ def _fetch_reporte_producto(producto, empresa, desde, hasta):
             cli_params.append(hasta)
         cli_where = " AND ".join(cli_wheres)
         cur.execute(f"""
-            SELECT t.cliente, t.empresa, COALESCE(ANY_VALUE(c.nombre), '') AS nombre,
+            SELECT t.cliente, t.empresa,
+                   COALESCE(
+                       NULLIF(TRIM(ANY_VALUE(c.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(c_any.nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(t.cliente_nombre)), ''),
+                       NULLIF(TRIM(ANY_VALUE(t.consignatario)), ''),
+                       t.cliente
+                   ) AS nombre,
                    SUM(t.monto_real) AS total_ventas
-            FROM (SELECT f.numero_cliente AS cliente, f.empresa, fd.piezas * fd.precio * f.total / NULLIF(inv.bruto, 0) AS monto_real
+            FROM (SELECT f.numero_cliente AS cliente, f.empresa, f.cliente_nombre, f.consignatario,
+                         COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) * fd.precio * f.total / NULLIF(inv.bruto, 0) AS monto_real
                   FROM facturas f JOIN factura_detalle fd ON fd.factura_id = f.id
-                  JOIN (SELECT fd2.factura_id, SUM(fd2.piezas * fd2.precio) AS bruto FROM factura_detalle fd2 GROUP BY fd2.factura_id) inv ON inv.factura_id = f.id
+                  JOIN (SELECT fd2.factura_id, SUM(COALESCE(NULLIF(fd2.cantidad, 0), fd2.piezas, 0) * fd2.precio) AS bruto FROM factura_detalle fd2 GROUP BY fd2.factura_id) inv ON inv.factura_id = f.id
                   WHERE {cli_where}) t
-            LEFT JOIN clientes c ON c.numero = t.cliente AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(t.empresa))
+            LEFT JOIN clientes c
+              ON TRIM(CAST(c.numero AS CHAR)) = TRIM(CAST(t.cliente AS CHAR))
+             AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(t.empresa))
+            LEFT JOIN (
+                SELECT TRIM(CAST(numero AS CHAR)) AS numero, MAX(NULLIF(TRIM(nombre), '')) AS nombre
+                FROM clientes
+                GROUP BY TRIM(CAST(numero AS CHAR))
+            ) c_any ON c_any.numero = TRIM(CAST(t.cliente AS CHAR))
             GROUP BY t.cliente, t.empresa ORDER BY total_ventas DESC
         """, cli_params)
         clientes = cur.fetchall()
 
         cur.execute(f"""
             SELECT f.id, f.factura AS folio, f.fecha, f.empresa, f.numero_cliente,
-                   COALESCE(c.nombre, '') AS cliente_nombre, f.estatus, f.total
+                   COALESCE(
+                       NULLIF(TRIM(c.nombre), ''),
+                       NULLIF(TRIM(c_any.nombre), ''),
+                       NULLIF(TRIM(f.cliente_nombre), ''),
+                       NULLIF(TRIM(f.consignatario), ''),
+                       f.numero_cliente
+                   ) AS cliente_nombre,
+                   COALESCE(NULLIF(fd.cantidad, 0), fd.piezas, 0) AS cantidad_producto,
+                   fd.precio AS precio_producto,
+                   fd.importe AS importe_producto,
+                   f.estatus, f.total
             FROM facturas f JOIN factura_detalle fd ON fd.factura_id = f.id
-            LEFT JOIN clientes c ON c.numero = f.numero_cliente AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(f.empresa))
+            LEFT JOIN clientes c
+              ON TRIM(CAST(c.numero AS CHAR)) = TRIM(CAST(f.numero_cliente AS CHAR))
+             AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(f.empresa))
+            LEFT JOIN (
+                SELECT TRIM(CAST(numero AS CHAR)) AS numero, MAX(NULLIF(TRIM(nombre), '')) AS nombre
+                FROM clientes
+                GROUP BY TRIM(CAST(numero AS CHAR))
+            ) c_any ON c_any.numero = TRIM(CAST(f.numero_cliente AS CHAR))
             WHERE {where_sql} ORDER BY f.fecha DESC
         """, params)
         facturas = cur.fetchall()
@@ -1958,7 +2120,7 @@ def reporte_producto_export_excel(
         ("", ""),
         ("KPI", "Valor"),
         ("Total vendido", f"${resumen['total']:,.2f}"),
-        ("Piezas vendidas", str(int(resumen['piezas_vendidas']))),
+        ("Piezas vendidas", _fmt_cantidad(resumen['piezas_vendidas'])),
         ("Facturas", str(resumen['facturas'])),
     ]
     for i, (k, v) in enumerate(resumen_data):
@@ -2009,7 +2171,7 @@ def reporte_producto_export_excel(
 
     # --- Sheet 2: Facturas ---
     ws2 = wb.create_sheet("Facturas")
-    cols_f = ["Folio", "Fecha", "Cliente", "Total"]
+    cols_f = ["Folio", "Fecha", "Cliente", "Cantidad", "Precio", "Importe producto", "Total factura"]
     for ci, col_name in enumerate(cols_f, 1):
         cell = ws2.cell(row=1, column=ci, value=col_name)
         cell.font = hdr_font; cell.fill = hdr_fill; cell.alignment = Alignment(horizontal="center"); cell.border = thin_border
@@ -2018,7 +2180,10 @@ def reporte_producto_export_excel(
         ws2.cell(row=r, column=1, value=f.get('folio', '')).font = value_font; ws2.cell(row=r, column=1).border = thin_border
         ws2.cell(row=r, column=2, value=str(f.get('fecha', '') or '')).font = value_font; ws2.cell(row=r, column=2).border = thin_border
         ws2.cell(row=r, column=3, value=f.get('cliente_nombre', '')).font = value_font; ws2.cell(row=r, column=3).border = thin_border
-        ws2.cell(row=r, column=4, value=f['total']).font = value_font; ws2.cell(row=r, column=4).number_format = '#,##0.00'; ws2.cell(row=r, column=4).border = thin_border
+        ws2.cell(row=r, column=4, value=_num_cantidad(f.get('cantidad_producto', 0))).font = value_font; ws2.cell(row=r, column=4).number_format = '#,##0.###'; ws2.cell(row=r, column=4).border = thin_border
+        ws2.cell(row=r, column=5, value=f.get('precio_producto', 0)).font = value_font; ws2.cell(row=r, column=5).number_format = '#,##0.00'; ws2.cell(row=r, column=5).border = thin_border
+        ws2.cell(row=r, column=6, value=f.get('importe_producto', 0)).font = value_font; ws2.cell(row=r, column=6).number_format = '#,##0.00'; ws2.cell(row=r, column=6).border = thin_border
+        ws2.cell(row=r, column=7, value=f['total']).font = value_font; ws2.cell(row=r, column=7).number_format = '#,##0.00'; ws2.cell(row=r, column=7).border = thin_border
     _auto_width(ws2)
 
     buf = io.BytesIO()
@@ -2090,7 +2255,7 @@ def reporte_producto_export_pdf(
     kpi_data = [
         ("Ventas Totales", f"${resumen['total']:,.2f}", (32/255, 84/255, 147/255)),
         ("Facturas", str(resumen['facturas']), (22/255, 163/255, 74/255)),
-        ("Piezas Vendidas", str(int(resumen['piezas_vendidas'])), (8/255, 145/255, 178/255)),
+        ("Piezas Vendidas", _fmt_cantidad(resumen['piezas_vendidas']), (8/255, 145/255, 178/255)),
         ("Ticket Promedio", tp, (245/255, 166/255, 35/255)),
     ]
     for i, (label, value, rgb) in enumerate(kpi_data):
@@ -2163,3 +2328,5 @@ def reporte_producto_export_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="Reporte_Producto_{producto[:30]}.pdf"'},
     )
+
+

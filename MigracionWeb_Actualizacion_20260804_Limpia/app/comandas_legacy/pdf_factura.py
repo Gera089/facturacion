@@ -176,11 +176,11 @@ def generar_pdf_factura_bytes(payload: dict, logos_dir: str) -> bytes:
     gourmet_es = ("gourmet españa" in emp_low) or ("gourmet espana" in emp_low)
 
     if gourmet_es:
-        headers = ["Cantidad", "Unidad", "CIP", "Descripción", "Código", "Piezas", "Precio", "Total"]
-        col_widths = [55, 45, 35, 180, 73, 40, 50, 62]
+        headers = ["Cantidad", "Unidad", "CIP", "Descripción", "Código", "Piezas", "Precio", "Descuento", "Total"]
+        col_widths = [45, 38, 32, 142, 62, 35, 43, 51, 52]
     else:
-        headers = ["Cantidad", "Unidad", "CIP", "Descripción", "Piezas", "Precio", "Total"]
-        col_widths = [60, 50, 45, 213, 55, 50, 67]
+        headers = ["Cantidad", "Unidad", "CIP", "Descripción", "Piezas", "Precio", "Descuento", "Total"]
+        col_widths = [50, 42, 38, 185, 43, 45, 62, 75]
 
     data.append(headers)
 
@@ -191,6 +191,7 @@ def generar_pdf_factura_bytes(payload: dict, logos_dir: str) -> bytes:
         piezas = p.get("piezas") or ""
         precio = _money(p.get("precio") or 0)
         total_linea = _money(p.get("total") or (float(p.get("cantidad") or 0) * float(p.get("precio") or 0)))
+        descuento_linea = f"{float(p.get('descuento_pct') or 0):.2f}%"
 
         unidad_pdf = (p.get("unidad") or "").strip().upper()
         codigo_o_cip = (p.get("codigo_barras") or "").strip() or "-"
@@ -200,9 +201,9 @@ def generar_pdf_factura_bytes(payload: dict, logos_dir: str) -> bytes:
         ))
 
         if gourmet_es:
-            fila = [str(cantidad), unidad_pdf, cip, desc_par, codigo_o_cip, str(piezas), precio, total_linea]
+            fila = [str(cantidad), unidad_pdf, cip, desc_par, codigo_o_cip, str(piezas), precio, descuento_linea, total_linea]
         else:
-            fila = [str(cantidad), unidad_pdf, cip, desc_par, str(piezas), precio, total_linea]
+            fila = [str(cantidad), unidad_pdf, cip, desc_par, str(piezas), precio, descuento_linea, total_linea]
 
         data.append(fila)
 
@@ -222,10 +223,10 @@ def generar_pdf_factura_bytes(payload: dict, logos_dir: str) -> bytes:
     style.append(("FONTSIZE", (2, 1), (2, -1), 10))  # CIP
 
     if gourmet_es:
-        for col in (4, 5, 6, 7):
+        for col in (4, 5, 6, 7, 8):
             style.append(("FONTSIZE", (col, 1), (col, -1), 9))
     else:
-        for col in (4, 5, 6):
+        for col in (4, 5, 6, 7):
             style.append(("FONTSIZE", (col, 1), (col, -1), 9))
 
     tabla_prod.setStyle(TableStyle(style))
@@ -234,8 +235,8 @@ def generar_pdf_factura_bytes(payload: dict, logos_dir: str) -> bytes:
 
     # Totales
     totales_data = [
-        ["", "", "", "", "SUMA",          f"${subtotal:,.2f}"],
-        ["", "", "", "", f"Descuento ({descuento_pct:.2f}%)", f"-${descuento_total:,.2f}"],
+        ["", "", "", "", "SUBTOTAL",      f"${subtotal:,.2f}"],
+        ["", "", "", "", "DESCUENTO",     f"-${descuento_total:,.2f}"],
         ["", "", "", "", "I.V.A.",        f"${iva_total:,.2f}"],
         ["", "", "", "", "GRAN TOTAL",    f"${total:,.2f}"],
     ]

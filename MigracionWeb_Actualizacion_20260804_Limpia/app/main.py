@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.db import init_db
-from app.routers import auth, billing, cadenas, collections, comandas, companies, conciliacion, crm, customers, dashboard, health, impresion, migrations, products, reports, support, tarifador_envios, timbrado, users
+from app.routers import auth, billing, cadenas, collections, comandas, companies, conciliacion, crm, customers, dashboard, health, impresion, migrations, products, promotoria, reports, support, tarifador_envios, timbrado, users
 
 
 app = FastAPI(title=settings.app_name, version=settings.version)
@@ -48,6 +48,7 @@ app.include_router(conciliacion.router)
 app.include_router(dashboard.router)
 app.include_router(users.router)
 app.include_router(reports.router)
+app.include_router(promotoria.router)
 app.include_router(impresion.router)
 app.include_router(migrations.router)
 app.include_router(support.router)

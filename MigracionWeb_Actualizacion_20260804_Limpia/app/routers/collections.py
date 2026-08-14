@@ -2,6 +2,7 @@ import json
 import threading
 import os
 import re
+import unicodedata
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
@@ -58,8 +59,8 @@ def _cc_filter(empresa=None, cadena_id=None, numero_cliente=None, documento=None
     result = list(_cartera_cache_data)
     hoy = datetime.now().date()
     if empresa:
-        e = str(empresa).strip().upper()
-        result = [r for r in result if str(r.get("empresa","")).strip().upper() == e]
+        e = _empresa_cadena_clave(empresa)
+        result = [r for r in result if _empresa_cadena_clave(r.get("empresa")) == e]
     if numero_cliente:
         nc = str(numero_cliente).strip()
         result = [r for r in result if str(r.get("numero_cliente","")).strip() == nc]
@@ -240,6 +241,10 @@ def _ensure_tables(cursor):
             monto_aplicado DECIMAL(14,2) NOT NULL DEFAULT 0,
             saldo_disponible DECIMAL(14,2) NOT NULL DEFAULT 0,
             forma_pago VARCHAR(5) DEFAULT '',
+            nota_credito_no_identificacion VARCHAR(40) DEFAULT '',
+            nota_credito_clave_unidad VARCHAR(10) DEFAULT '',
+            nota_credito_unidad VARCHAR(20) DEFAULT '',
+            nota_credito_descripcion VARCHAR(255) DEFAULT '',
             referencia VARCHAR(120) DEFAULT '',
             observaciones TEXT NULL,
             usuario VARCHAR(120) DEFAULT '',
@@ -258,6 +263,18 @@ def _ensure_tables(cursor):
             cursor.execute("ALTER TABLE cobranza_recibos ADD COLUMN forma_pago VARCHAR(5) DEFAULT '' AFTER saldo_disponible")
     except Exception:
         pass
+    for col, ddl in (
+        ("nota_credito_no_identificacion", "ALTER TABLE cobranza_recibos ADD COLUMN nota_credito_no_identificacion VARCHAR(40) DEFAULT '' AFTER forma_pago"),
+        ("nota_credito_clave_unidad", "ALTER TABLE cobranza_recibos ADD COLUMN nota_credito_clave_unidad VARCHAR(10) DEFAULT '' AFTER nota_credito_no_identificacion"),
+        ("nota_credito_unidad", "ALTER TABLE cobranza_recibos ADD COLUMN nota_credito_unidad VARCHAR(20) DEFAULT '' AFTER nota_credito_clave_unidad"),
+        ("nota_credito_descripcion", "ALTER TABLE cobranza_recibos ADD COLUMN nota_credito_descripcion VARCHAR(255) DEFAULT '' AFTER nota_credito_unidad"),
+    ):
+        try:
+            cursor.execute(f"SHOW COLUMNS FROM cobranza_recibos LIKE '{col}'")
+            if not cursor.fetchone():
+                cursor.execute(ddl)
+        except Exception:
+            pass
     _ensure_indexes(cursor)
     cursor.execute(
         """
@@ -283,6 +300,7 @@ def _ensure_tables(cursor):
         CREATE TABLE IF NOT EXISTS cobranza_saldos_iniciales (
             id INT AUTO_INCREMENT PRIMARY KEY,
             factura VARCHAR(80) NOT NULL,
+            folio_interno VARCHAR(80) DEFAULT '',
             numero_cliente VARCHAR(50) NOT NULL,
             cliente_nombre VARCHAR(255) DEFAULT '',
             empresa VARCHAR(120) NOT NULL,
@@ -317,6 +335,7 @@ def _ensure_tables(cursor):
         cursor.execute("SHOW COLUMNS FROM cobranza_saldos_iniciales")
         columnas_si = {str((row[0] if not isinstance(row, dict) else row.get("Field")) or "").lower() for row in cursor.fetchall()}
         for col, ddl in [
+            ("folio_interno", "ALTER TABLE cobranza_saldos_iniciales ADD COLUMN folio_interno VARCHAR(80) DEFAULT '' AFTER factura"),
             ("xml_nombre", "ALTER TABLE cobranza_saldos_iniciales ADD COLUMN xml_nombre VARCHAR(255) DEFAULT '' AFTER vendedor"),
             ("xml_path", "ALTER TABLE cobranza_saldos_iniciales ADD COLUMN xml_path TEXT NULL AFTER xml_nombre"),
             ("uuid", "ALTER TABLE cobranza_saldos_iniciales ADD COLUMN uuid VARCHAR(40) DEFAULT '' AFTER xml_path"),
@@ -520,7 +539,13 @@ def _consultar_cartera(cursor, conn, empresa=None, numero_cliente=None, document
         FROM facturas f
         LEFT JOIN clientes c
             ON TRIM(CAST(c.numero AS CHAR)) = TRIM(CAST(f.numero_cliente AS CHAR))
-            AND UPPER(TRIM(c.empresa)) = UPPER(TRIM(f.empresa))
+            AND (
+                UPPER(TRIM(c.empresa)) = UPPER(TRIM(f.empresa))
+                OR (
+                    UPPER(TRIM(f.empresa)) = 'GOURMET_ESPANA'
+                    AND UPPER(TRIM(c.empresa)) LIKE 'GOURMET%'
+                )
+            )
         LEFT JOIN clientes c_eza
             ON TRIM(CAST(c_eza.numero AS CHAR)) = TRIM(CAST(f.numero_cliente AS CHAR))
             AND UPPER(TRIM(c_eza.empresa)) = 'EZA2007'
@@ -531,7 +556,7 @@ def _consultar_cartera(cursor, conn, empresa=None, numero_cliente=None, document
     """
     params = []
     if empresa and str(empresa).strip().lower() not in ("", "todas"):
-        sql += " AND f.empresa = %s"
+        sql += " AND UPPER(REPLACE(TRIM(f.empresa), '_', ' ')) = UPPER(REPLACE(TRIM(%s), '_', ' '))"
         params.append(str(empresa).strip())
     if cadena_id:
         sql += """
@@ -561,12 +586,36 @@ def _consultar_cartera(cursor, conn, empresa=None, numero_cliente=None, document
     cursor.execute(sql, params)
     rows = _dict_rows(cursor)
 
+    # Los saldos iniciales son la fotografía real de cartera al iniciar el
+    # módulo. Cuando traen un folio interno que ya existe en `facturas`, no se
+    # deben agregar ambos importes: el saldo inicial sustituye a esa factura
+    # para evitar duplicar total, saldo y métricas.
+    params_si = []
+    if empresa and str(empresa).strip().lower() not in ("", "todas"):
+        sql_si_where = " AND UPPER(REPLACE(TRIM(empresa), '_', ' ')) = UPPER(REPLACE(TRIM(%s), '_', ' '))"
+        params_si.append(str(empresa).strip())
+    else:
+        sql_si_where = ""
+    cursor.execute(
+        "SELECT id, factura, folio_interno, numero_cliente, cliente_nombre, empresa, fecha_factura AS fecha, dias_credito, fecha_vencimiento, total, pagos_iniciales, saldo_inicial, vendedor FROM cobranza_saldos_iniciales WHERE estatus = 'ACTIVO' " + sql_si_where,
+        params_si,
+    )
+    saldos_iniciales = _dict_rows(cursor)
+    folios_saldo_inicial = {
+        (_empresa_cadena_clave(row.get("empresa")), str(row.get("folio_interno") or row.get("factura") or "").strip().upper())
+        for row in saldos_iniciales
+        if str(row.get("folio_interno") or row.get("factura") or "").strip()
+    }
+
     pagos_facturas, pagos_saldos = _pagos_por_documento(cursor)
     fechas_inicio = _fecha_inicio_por_empresa(cursor)
     hoy = datetime.now().date()
     cartera = []
 
     for row in rows:
+        llave_factura = (_empresa_cadena_clave(row.get("empresa")), str(row.get("factura") or "").strip().upper())
+        if llave_factura in folios_saldo_inicial:
+            continue
         empresa_row = str(row.get("empresa") or "").strip().upper()
         fecha_inicio = fechas_inicio.get(empresa_row)
         fecha_factura = row.get("fecha")
@@ -601,17 +650,7 @@ def _consultar_cartera(cursor, conn, empresa=None, numero_cliente=None, document
             "estatus_cobranza": estatus_cobranza,
         })
 
-    params_si = []
-    if empresa and str(empresa).strip().lower() not in ("", "todas"):
-        sql_si_where = " AND empresa = %s"
-        params_si.append(str(empresa).strip())
-    else:
-        sql_si_where = ""
-    cursor.execute(
-        "SELECT id, factura, numero_cliente, cliente_nombre, empresa, fecha_factura AS fecha, dias_credito, fecha_vencimiento, total, vendedor, saldo_inicial FROM cobranza_saldos_iniciales WHERE estatus = 'ACTIVO' " + sql_si_where,
-        params_si,
-    )
-    for row in _dict_rows(cursor):
+    for row in saldos_iniciales:
         saldo_id = int(row["id"])
         total = _to_float(row.get("total"))
         pagos_base = _to_float(row.get("pagos_iniciales", 0.0))
@@ -1444,7 +1483,7 @@ def register_payment(payload: dict, user=Depends(require_user)):
         monto_total = round(_to_float(payload.get("monto")), 2)
         if monto_total <= 0:
             raise HTTPException(status_code=400, detail="El monto debe ser mayor a cero")
-        empresa = str(payload.get("empresa") or "").strip()
+        empresa = _empresa_operativa(str(payload.get("empresa") or "").strip())
         numero_cliente = str(payload.get("numero_cliente") or "").strip()
         if not empresa or not numero_cliente:
             raise HTTPException(status_code=400, detail="Faltan empresa o numero_cliente")
@@ -1463,6 +1502,10 @@ def register_payment(payload: dict, user=Depends(require_user)):
         if tipo in ("PAGO", "NOTA_CREDITO") and not forma_pago:
             raise HTTPException(status_code=400, detail="Selecciona una forma de pago SAT.")
         observaciones = str(payload.get("observaciones") or "").strip()
+        nota_noid = str(payload.get("nota_credito_no_identificacion") or "").strip()[:40]
+        nota_clave_unidad = str(payload.get("nota_credito_clave_unidad") or "").strip()[:10]
+        nota_unidad = str(payload.get("nota_credito_unidad") or "").strip()[:20]
+        nota_descripcion = str(payload.get("nota_credito_descripcion") or "").strip()[:255]
         usuario = user["username"]
 
         aplicaciones = payload.get("aplicaciones") or []
@@ -1518,10 +1561,14 @@ def register_payment(payload: dict, user=Depends(require_user)):
         cursor.execute(
             """INSERT INTO cobranza_recibos
                (folio, numero_cliente, empresa, tipo_recibo, fecha_recibo, monto_total,
-                monto_aplicado, saldo_disponible, forma_pago, referencia, observaciones, usuario)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                monto_aplicado, saldo_disponible, forma_pago,
+                nota_credito_no_identificacion, nota_credito_clave_unidad, nota_credito_unidad,
+                nota_credito_descripcion, referencia, observaciones, usuario)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (folio, numero_cliente, empresa, tipo, fecha_movimiento, monto_total,
-             total_aplicado, saldo_disponible, forma_pago, referencia, observaciones, usuario),
+             total_aplicado, saldo_disponible, forma_pago,
+             nota_noid, nota_clave_unidad, nota_unidad, nota_descripcion,
+             referencia, observaciones, usuario),
         )
         recibo_id = cursor.lastrowid
 
@@ -1935,11 +1982,12 @@ def crear_saldo_inicial(payload: dict, user=Depends(require_user)):
             raise HTTPException(status_code=400, detail="empresa, factura y numero_cliente son obligatorios")
         cursor.execute(
             """INSERT INTO cobranza_saldos_iniciales
-               (factura, numero_cliente, cliente_nombre, empresa, fecha_factura, fecha_vencimiento,
+               (factura, folio_interno, numero_cliente, cliente_nombre, empresa, fecha_factura, fecha_vencimiento,
                 dias_credito, total, pagos_iniciales, saldo_inicial, vendedor, observaciones, usuario)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (
                 factura,
+                str(payload.get("folio_interno") or "").strip(),
                 numero_cliente,
                 str(payload.get("cliente_nombre") or "").strip(),
                 empresa,
@@ -2031,6 +2079,19 @@ def _parse_date_value(value):
     txt = str(value or "").strip()
     if not txt:
         return None
+    # Las plantillas históricas de SAE usan meses en español: 23/ABR/2026.
+    # datetime.strptime no interpreta esas abreviaturas con la configuración
+    # regional del proceso, por eso se convierten explícitamente.
+    partes = re.split(r"[/-]", txt.upper())
+    meses_es = {
+        "ENE": 1, "FEB": 2, "MAR": 3, "ABR": 4, "MAY": 5, "JUN": 6,
+        "JUL": 7, "AGO": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DIC": 12,
+    }
+    if len(partes) == 3 and partes[1] in meses_es:
+        try:
+            return datetime(int(partes[2]), meses_es[partes[1]], int(partes[0])).date()
+        except ValueError:
+            pass
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
         try:
             return datetime.strptime(txt, fmt).date()
@@ -2047,7 +2108,24 @@ def _normalizar_numero_cliente(valor):
 
 
 def _empresa_cadena_clave(empresa):
-    return str(empresa or "").strip().upper()
+    texto = re.sub(r"[_\s]+", " ", str(empresa or "").strip().upper())
+    return "".join(
+        caracter for caracter in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(caracter) != "Mn"
+    )
+
+
+def _empresa_operativa(empresa: str) -> str:
+    """Convierte el código técnico del selector al nombre usado en cartera."""
+    clave = _empresa_cadena_clave(empresa)
+    equivalencias = {
+        "GOURMET ESPANA": "Gourmet España",
+        "IBERSUR": "Ibersur",
+        "REMISION": "Remisiones",
+        "REMISIONES": "Remisiones",
+        "EZA2007": "EZA2007",
+    }
+    return equivalencias.get(clave, str(empresa or "").strip())
 
 
 def _safe_filename(name: str) -> str:
@@ -2060,6 +2138,234 @@ def _normalizar_xml_nombre(value: str) -> str:
     if nombre and not nombre.lower().endswith(".xml"):
         nombre += ".xml"
     return nombre
+
+
+def _normalizar_uuid_cfdi(value: str) -> str:
+    return str(value or "").strip().upper()
+
+
+def _resolver_cfdi_por_folio_interno(cursor, folio_interno: str) -> dict:
+    """Obtiene la referencia fiscal y, si existe, el folio histórico SAE."""
+    interno = str(folio_interno or "").strip()
+    if not interno:
+        return {}
+    try:
+        cursor.execute(
+            """SELECT f.sae_codigo, ce.factura, ce.serie, ce.folio_cfdi, ce.uuid
+               FROM facturas f
+               LEFT JOIN cfdi_emitidos ce
+                 ON ce.factura_id = f.id
+               WHERE UPPER(TRIM(f.factura)) = UPPER(TRIM(%s))
+               ORDER BY ce.id DESC LIMIT 1""",
+            (interno,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {}
+        data = row if isinstance(row, dict) else {
+            "sae_codigo": row[0], "factura": row[1], "serie": row[2], "folio_cfdi": row[3], "uuid": row[4]
+        }
+        fiscal = f"{str(data.get('serie') or '').strip()}{str(data.get('folio_cfdi') or '').strip()}"
+        return {
+            "factura_fiscal": fiscal,
+            "uuid": _normalizar_uuid_cfdi(data.get("uuid")),
+            "sae_codigo": str(data.get("sae_codigo") or "").strip(),
+        }
+    except Exception:
+        return {}
+
+
+def _rutas_xml_historicos() -> list[Path]:
+    """Fuentes de XML, sin duplicar rutas ni tocar los archivos de origen."""
+    rutas = [settings.storage_dir / "cfdi", *(Path(item) for item in (settings.cobranza_xml_historicos_dirs or []))]
+    resultado, vistas = [], set()
+    for ruta in rutas:
+        try:
+            clave = str(ruta.resolve()).lower()
+        except Exception:
+            clave = str(ruta).lower()
+        if clave not in vistas:
+            vistas.add(clave)
+            resultado.append(ruta)
+    return resultado
+
+
+def _leer_xml_historico(ruta: Path) -> tuple[str, bytes] | None:
+    try:
+        if not ruta.is_file() or ruta.stat().st_size > 10 * 1024 * 1024:
+            return None
+        datos = ruta.read_bytes()
+        # Comprueba que el candidato realmente sea un CFDI antes de asociarlo.
+        _extraer_datos_cfdi_xml(datos)
+        return (_normalizar_xml_nombre(ruta.name), datos)
+    except Exception:
+        return None
+
+
+def _buscar_xml_historico_por_nombre(nombre_xml: str, cache: dict[str, tuple[str, bytes] | None]) -> tuple[str, bytes] | None:
+    """Busca el nombre original del XML en el depósito de Aspel y otras fuentes."""
+    nombre = _normalizar_xml_nombre(nombre_xml)
+    if not nombre:
+        return None
+    clave_cache = f"nombre:{nombre.lower()}"
+    if clave_cache in cache:
+        return cache[clave_cache]
+    for base in _rutas_xml_historicos():
+        try:
+            if not base.is_dir():
+                continue
+            directo = _leer_xml_historico(base / nombre)
+            if directo:
+                cache[clave_cache] = directo
+                return directo
+            for ruta in base.rglob(nombre):
+                encontrado = _leer_xml_historico(ruta)
+                if encontrado:
+                    cache[clave_cache] = encontrado
+                    return encontrado
+        except Exception:
+            continue
+    cache[clave_cache] = None
+    return None
+
+
+def _buscar_xml_historico_por_sae(sae_codigo: str, cache: dict[str, tuple[str, bytes] | None]) -> tuple[str, bytes] | None:
+    """Relaciona un folio SAE (ej. SAE 20542) con el CFDI guardado por Aspel."""
+    numeros = "".join(re.findall(r"\d+", str(sae_codigo or "")))
+    if not numeros:
+        return None
+    clave_cache = f"sae:{numeros}"
+    if clave_cache in cache:
+        return cache[clave_cache]
+    objetivo = str(int(numeros))
+    patrones = [f"*{objetivo}*.xml", f"*{int(numeros):010d}*.xml"]
+    vistos = set()
+    for base in _rutas_xml_historicos():
+        try:
+            if not base.is_dir():
+                continue
+            for patron in patrones:
+                for ruta in base.rglob(patron):
+                    clave = str(ruta).lower()
+                    if clave in vistos:
+                        continue
+                    vistos.add(clave)
+                    encontrado = _leer_xml_historico(ruta)
+                    if not encontrado:
+                        continue
+                    info = _extraer_datos_cfdi_xml(encontrado[1])
+                    folio_xml = "".join(re.findall(r"\d+", str(info.get("folio_cfdi") or "")))
+                    if folio_xml and str(int(folio_xml)) == objetivo:
+                        cache[clave_cache] = encontrado
+                        return encontrado
+        except Exception:
+            continue
+    cache[clave_cache] = None
+    return None
+
+
+def _buscar_xml_historico_por_uuid(cursor, uuid_busqueda: str, cache: dict[str, tuple[str, bytes] | None]) -> tuple[str, bytes] | None:
+    """Busca un XML por UUID en CFDI emitidos y en las rutas históricas configuradas."""
+    uuid_limpio = _normalizar_uuid_cfdi(uuid_busqueda)
+    if not uuid_limpio:
+        return None
+    if uuid_limpio in cache:
+        return cache[uuid_limpio]
+
+    try:
+        cursor.execute("SELECT xml_path FROM cfdi_emitidos WHERE UPPER(TRIM(uuid)) = %s ORDER BY id DESC LIMIT 1", (uuid_limpio,))
+        row = cursor.fetchone()
+        ruta_registrada = (row.get("xml_path") if isinstance(row, dict) else row[0]) if row else ""
+        ruta = Path(str(ruta_registrada or ""))
+        if ruta.is_file():
+            datos = ruta.read_bytes()
+            if uuid_limpio.encode("ascii") in datos.upper():
+                resultado = (_normalizar_xml_nombre(ruta.name), datos)
+                cache[uuid_limpio] = resultado
+                return resultado
+    except Exception:
+        pass
+
+    rutas = _rutas_xml_historicos()
+    vistas, revisados = set(), 0
+    for base in rutas:
+        try:
+            base = base.resolve()
+        except Exception:
+            continue
+        if str(base).lower() in vistas or not base.is_dir():
+            continue
+        vistas.add(str(base).lower())
+        try:
+            for ruta in base.rglob("*.xml"):
+                revisados += 1
+                if revisados > 10000:
+                    break
+                try:
+                    if ruta.stat().st_size > 10 * 1024 * 1024:
+                        continue
+                    datos = ruta.read_bytes()
+                    if uuid_limpio.encode("ascii") in datos.upper():
+                        resultado = (_normalizar_xml_nombre(ruta.name), datos)
+                        cache[uuid_limpio] = resultado
+                        return resultado
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    cache[uuid_limpio] = None
+    return None
+
+
+def _buscar_xml_historico_por_folio(cursor, folio_busqueda: str, cache: dict[str, tuple[str, bytes] | None]) -> tuple[str, bytes] | None:
+    """Ubica un XML por la serie y folio fiscal visibles (ej. FE13)."""
+    folio_limpio = re.sub(r"\s+", "", str(folio_busqueda or "").upper())
+    if not folio_limpio:
+        return None
+    try:
+        cursor.execute(
+            """SELECT uuid FROM cfdi_emitidos
+               WHERE UPPER(REPLACE(CONCAT(COALESCE(serie,''), COALESCE(folio_cfdi,'')), ' ', '')) = %s
+               ORDER BY id DESC LIMIT 1""",
+            (folio_limpio,),
+        )
+        row = cursor.fetchone()
+        uuid = (row.get("uuid") if isinstance(row, dict) else row[0]) if row else ""
+        if uuid:
+            encontrado = _buscar_xml_historico_por_uuid(cursor, uuid, cache)
+            if encontrado:
+                return encontrado
+    except Exception:
+        pass
+
+    rutas = _rutas_xml_historicos()
+    revisados, vistas = 0, set()
+    for base in rutas:
+        try:
+            base = base.resolve()
+        except Exception:
+            continue
+        if str(base).lower() in vistas or not base.is_dir():
+            continue
+        vistas.add(str(base).lower())
+        try:
+            for ruta in base.rglob("*.xml"):
+                revisados += 1
+                if revisados > 10000:
+                    break
+                try:
+                    if ruta.stat().st_size > 10 * 1024 * 1024:
+                        continue
+                    datos = ruta.read_bytes()
+                    info = _extraer_datos_cfdi_xml(datos)
+                    folio_xml = re.sub(r"\s+", "", f"{info.get('serie_cfdi') or ''}{info.get('folio_cfdi') or ''}".upper())
+                    if folio_xml == folio_limpio:
+                        return (_normalizar_xml_nombre(ruta.name), datos)
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return None
 
 
 def _extraer_datos_cfdi_xml(xml_bytes: bytes) -> dict:
@@ -2153,16 +2459,39 @@ def _importar_saldos_iniciales_data(payload: dict, user: dict, xmls_zip: dict[st
         )
         if reemplazar:
             cursor.execute("DELETE FROM cobranza_saldos_iniciales WHERE UPPER(TRIM(empresa)) = UPPER(TRIM(%s))", (empresa,))
+        # La plantilla puede omitir los días de crédito. En ese caso se usan los
+        # registrados para el cliente dentro de la misma empresa, igual que la
+        # cartera normal de facturas internas.
+        cursor.execute("SELECT numero, empresa, dias_credito FROM clientes")
+        creditos_clientes = {}
+        for cliente in _dict_rows(cursor):
+            numero = _normalizar_numero_cliente(cliente.get("numero"))
+            empresa_cliente = _empresa_cadena_clave(cliente.get("empresa"))
+            if numero and empresa_cliente:
+                creditos_clientes[(empresa_cliente, numero)] = _to_int(cliente.get("dias_credito") or 0)
         importados = 0
         omitidos = 0
         xmls_asociados = 0
         xmls_faltantes = []
+        xmls_por_uuid = {}
+        for nombre_zip, contenido_zip in (xmls_zip or {}).items():
+            try:
+                uuid_zip = _normalizar_uuid_cfdi(_extraer_datos_cfdi_xml(contenido_zip).get("uuid"))
+                if uuid_zip:
+                    xmls_por_uuid[uuid_zip] = (nombre_zip, contenido_zip)
+            except Exception:
+                continue
+        cache_xml_uuid: dict[str, tuple[str, bytes] | None] = {}
         for row in rows:
             if not isinstance(row, dict):
                 omitidos += 1
                 continue
             factura = str(row.get("factura") or row.get("folio") or row.get("documento") or "").strip()
+            folio_interno = str(row.get("folio_interno") or row.get("interno") or row.get("folio_sae") or "").strip()
             num_cliente = _normalizar_numero_cliente(row.get("cliente_numero") or row.get("numero_cliente") or row.get("cliente") or "")
+            referencia_interna = _resolver_cfdi_por_folio_interno(cursor, folio_interno) if folio_interno else {}
+            if not factura:
+                factura = str(referencia_interna.get("factura_fiscal") or folio_interno).strip()
             if not factura or not num_cliente:
                 omitidos += 1
                 continue
@@ -2170,23 +2499,65 @@ def _importar_saldos_iniciales_data(payload: dict, user: dict, xmls_zip: dict[st
             vendedor = str(row.get("vendedor") or "").strip()
             fecha_factura = _parse_date_value(row.get("fecha_factura") or row.get("fecha"))
             fecha_vencimiento = _parse_date_value(row.get("fecha_vencimiento") or row.get("vencimiento") or row.get("fecha_vto"))
-            dias_credito = _to_int(row.get("dias_credito") or row.get("credito") or 0)
+            valor_credito = row.get("dias_credito") if row.get("dias_credito") not in (None, "") else row.get("credito")
+            dias_credito = _to_int(valor_credito or 0)
+            if valor_credito in (None, ""):
+                clave_credito = (_empresa_cadena_clave(empresa), num_cliente)
+                dias_credito = creditos_clientes.get(clave_credito, 0)
+                # Las remisiones usan la cartera operativa de EZA2007 o Ibersur.
+                if not dias_credito and _empresa_cadena_clave(empresa) in ("REMISION", "REMISIÓN"):
+                    dias_credito = creditos_clientes.get(("EZA2007", num_cliente), creditos_clientes.get(("IBERSUR", num_cliente), 0))
             total = round(_to_float(row.get("total") or row.get("importe") or row.get("monto_total")), 2)
             pagos_iniciales = round(_to_float(row.get("pagado") or row.get("pagos_iniciales") or 0), 2)
             saldo_inicial = round(_to_float(row.get("saldo") or row.get("saldo_inicial") or 0), 2)
             observaciones = str(row.get("observaciones") or row.get("comentarios") or "").strip()
             xml_nombre = _normalizar_xml_nombre(row.get("xml") or row.get("xml_nombre") or row.get("archivo_xml") or row.get("nombre_xml") or "")
+            uuid_solicitado = _normalizar_uuid_cfdi(row.get("uuid") or row.get("uuid_cfdi") or referencia_interna.get("uuid") or "")
             xml_path = ""
             xml_data = {}
-            if xml_nombre and xmls_zip is not None:
-                xml_bytes = xmls_zip.get(xml_nombre.lower())
-                if xml_bytes:
+            if uuid_solicitado:
+                encontrado = xmls_por_uuid.get(uuid_solicitado) or _buscar_xml_historico_por_uuid(cursor, uuid_solicitado, cache_xml_uuid)
+                if encontrado:
+                    xml_nombre, xml_bytes = encontrado
                     xml_data = _extraer_datos_cfdi_xml(xml_bytes)
                     xml_path = _guardar_xml_saldo_externo(empresa, xml_nombre, xml_bytes)
                     xmls_asociados += 1
                     if xml_data.get("total") and total <= 0:
                         total = round(_to_float(xml_data.get("total")), 2)
                 else:
+                    xmls_faltantes.append(f"UUID {uuid_solicitado}")
+            if not xml_path and xml_nombre:
+                encontrado = _buscar_xml_historico_por_nombre(xml_nombre, cache_xml_uuid)
+                if encontrado:
+                    xml_nombre, xml_bytes = encontrado
+                    xml_data = _extraer_datos_cfdi_xml(xml_bytes)
+                    xml_path = _guardar_xml_saldo_externo(empresa, xml_nombre, xml_bytes)
+                    xmls_asociados += 1
+            if not xml_path and referencia_interna.get("sae_codigo"):
+                encontrado = _buscar_xml_historico_por_sae(referencia_interna["sae_codigo"], cache_xml_uuid)
+                if encontrado:
+                    xml_nombre, xml_bytes = encontrado
+                    xml_data = _extraer_datos_cfdi_xml(xml_bytes)
+                    xml_path = _guardar_xml_saldo_externo(empresa, xml_nombre, xml_bytes)
+                    xmls_asociados += 1
+            if not xml_path and not uuid_solicitado:
+                encontrado = _buscar_xml_historico_por_folio(cursor, factura, cache_xml_uuid)
+                if encontrado:
+                    xml_nombre, xml_bytes = encontrado
+                    xml_data = _extraer_datos_cfdi_xml(xml_bytes)
+                    xml_path = _guardar_xml_saldo_externo(empresa, xml_nombre, xml_bytes)
+                    xmls_asociados += 1
+                    if xml_data.get("total") and total <= 0:
+                        total = round(_to_float(xml_data.get("total")), 2)
+            if xml_nombre and xmls_zip is not None:
+                xml_bytes = xmls_zip.get(xml_nombre.lower())
+                if xml_bytes and not xml_path:
+                    xml_data = _extraer_datos_cfdi_xml(xml_bytes)
+                    xml_path = _guardar_xml_saldo_externo(empresa, xml_nombre, xml_bytes)
+                    xmls_asociados += 1
+                    if xml_data.get("total") and total <= 0:
+                        total = round(_to_float(xml_data.get("total")), 2)
+                elif not xml_path:
                     xmls_faltantes.append(xml_nombre)
             if saldo_inicial <= 0:
                 saldo_inicial = round(max(total - pagos_iniciales, 0.0), 2)
@@ -2202,12 +2573,12 @@ def _importar_saldos_iniciales_data(payload: dict, user: dict, xmls_zip: dict[st
                 continue
             cursor.execute(
                 """INSERT INTO cobranza_saldos_iniciales
-                   (factura, numero_cliente, cliente_nombre, empresa, fecha_factura, fecha_vencimiento,
+                   (factura, folio_interno, numero_cliente, cliente_nombre, empresa, fecha_factura, fecha_vencimiento,
                     dias_credito, total, pagos_iniciales, saldo_inicial, vendedor, xml_nombre, xml_path,
                     uuid, serie_cfdi, folio_cfdi, rfc_receptor, nombre_receptor, cp_receptor, regimen_receptor,
                     moneda_cfdi, observaciones, usuario, estatus)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACTIVO')""",
-                (factura, num_cliente, cliente_nombre, empresa, fecha_factura, fecha_vencimiento,
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACTIVO')""",
+                (factura, folio_interno, num_cliente, cliente_nombre, empresa, fecha_factura, fecha_vencimiento,
                  dias_credito, total, pagos_iniciales, saldo_inicial, vendedor, xml_nombre, xml_path,
                  xml_data.get("uuid") or "", xml_data.get("serie_cfdi") or "", xml_data.get("folio_cfdi") or "",
                  xml_data.get("rfc_receptor") or "", xml_data.get("nombre_receptor") or "", xml_data.get("cp_receptor") or "",

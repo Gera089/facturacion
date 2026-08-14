@@ -3,7 +3,12 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-BUILD_ID = "2026.08.10-folios-ez-fe-sin-ceros-1"
+BUILD_ID = "2026.08.13-exhibidores-y-redondeo-1"
+
+# Depósito oficial de CFDI de Aspel SAE en el servidor.  Se conserva como
+# fuente de sólo lectura: los XML encontrados se copian al almacenamiento de
+# cobranza y nunca se alteran dentro de Aspel.
+ASPEL_SAE_CFDI_INGRESOS_DIR = r"C:\Program Files (x86)\Common Files\Aspel\Documentos digitales\Deposito\Comprobantes Digitales\Ingresos"
 
 
 def _unique_urls(urls: list[str]) -> list[str]:
@@ -66,6 +71,7 @@ class Settings:
     catalog_vps_url: str = ""
     catalog_vps_email: str = ""
     catalog_vps_password: str = ""
+    cobranza_xml_historicos_dirs: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         raw_urls = EXTERNAL_CFG.get("migracion_web_api_urls") or EXTERNAL_CFG.get("api_web_urls") or []
@@ -87,6 +93,15 @@ class Settings:
         object.__setattr__(self, "catalog_vps_url", (EXTERNAL_CFG.get("catalog_vps_url") or os.environ.get("CATALOGO_VPS_URL") or "").rstrip("/"))
         object.__setattr__(self, "catalog_vps_email", EXTERNAL_CFG.get("catalog_vps_email") or os.environ.get("CATALOGO_VPS_EMAIL") or "")
         object.__setattr__(self, "catalog_vps_password", EXTERNAL_CFG.get("catalog_vps_password") or os.environ.get("CATALOGO_VPS_PASSWORD") or "")
+        rutas_xml = EXTERNAL_CFG.get("cobranza_xml_historicos_dirs") or os.environ.get("COBRANZA_XML_HISTORICOS_DIRS") or []
+        if isinstance(rutas_xml, str):
+            rutas_xml = [item.strip() for item in rutas_xml.split(";") if item.strip()]
+        if not isinstance(rutas_xml, list):
+            rutas_xml = []
+        rutas_limpias = [str(item).strip() for item in rutas_xml if str(item).strip()]
+        if ASPEL_SAE_CFDI_INGRESOS_DIR not in rutas_limpias:
+            rutas_limpias.append(ASPEL_SAE_CFDI_INGRESOS_DIR)
+        object.__setattr__(self, "cobranza_xml_historicos_dirs", rutas_limpias)
 
 
 settings = Settings()

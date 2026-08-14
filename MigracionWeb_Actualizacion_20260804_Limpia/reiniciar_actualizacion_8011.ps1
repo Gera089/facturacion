@@ -16,6 +16,19 @@ $logDir = Join-Path $projectRoot "logs"
 $stdoutLog = Join-Path $logDir "actualizacion_8011_stdout.log"
 $stderrLog = Join-Path $logDir "actualizacion_8011_stderr.log"
 
+# 8011 es la instancia de pruebas, pero debe utilizar el almacenamiento
+# persistente del servidor para no guardar CER/KEY dentro de la carpeta del
+# proyecto actualizable. Sin esta variable DATA_DIR cae en $projectRoot y una
+# carga/guardado de configuración termina apuntando al extraíble.
+$persistentDataDir = Join-Path $env:ProgramData "Galacticos\FacturacionWeb"
+if (Test-Path -LiteralPath $persistentDataDir) {
+  $env:FACTURACION_DATA_DIR = $persistentDataDir
+} else {
+  # En una estación de desarrollo que todavía no tiene instalación, se
+  # conserva el comportamiento local sin inventar una ruta inexistente.
+  $env:FACTURACION_DATA_DIR = $projectRoot
+}
+
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 $listener = Get-NetTCPConnection -LocalPort 8011 -State Listen -ErrorAction SilentlyContinue |

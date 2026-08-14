@@ -3586,7 +3586,9 @@ function calculateInvoiceTotals() {
     const discountPct = hasHistoricalDiscount
       ? parseInvoiceNumber(row.dataset.descuentoPct)
       : (invoiceProductHasDiscount(product) ? parseInvoiceNumber(invoiceDiscount?.value) : 0);
-    const lineDiscount = amount * (discountPct / 100);
+    // El descuento por partida se conserva a dos decimales, igual que el
+    // importe fiscal que se enviará al CFDI. Evita residuos como .889.
+    const lineDiscount = Math.round((amount * (discountPct / 100) + Number.EPSILON) * 100) / 100;
     subtotal += amount;
     if (hasIva) taxableSubtotal += amount;
     discount += lineDiscount;
@@ -3952,7 +3954,7 @@ function invoiceFilledRows() {
         iva: invoiceProductHasIva(product) ? "Sí" : "No",
         descuento: product.descuento || "No",
         descuento_pct: descuentoPct,
-        descuento_importe: importe * (descuentoPct / 100),
+        descuento_importe: Math.round((importe * (descuentoPct / 100) + Number.EPSILON) * 100) / 100,
       };
     })
     .filter((row) => row.cip || row.descripcion || row.importe > 0);
@@ -6387,6 +6389,13 @@ let colActiveTab = "cartera";
 let colPayMode = "PAGO";
 let _colPayPagoReciboId = null;
 
+function documentoCobranzaHtml(item) {
+  const fiscal = String(item?.factura || "").trim();
+  const interno = String(item?.folio_interno || "").trim();
+  if (!interno) return escapeCell(fiscal);
+  return `<strong>${escapeCell(interno)}</strong><small style="display:block;color:#64748b;font-weight:600">Fiscal: ${escapeCell(fiscal || "pendiente")}</small>`;
+}
+
 function renderCollectionsStats(stats) {
   colStatsDiv.innerHTML = stats
     ? `
@@ -6479,8 +6488,8 @@ async function loadColCartera() {
     renderCollectionsStats(summary);
     const items = Array.isArray(portfolio) ? portfolio : (portfolio.items || []);
     colCarteraTbody.innerHTML = items.length
-      ? items.map(i => `<tr data-id="${i.id}" data-empresa="${escapeCell(i.empresa||'')}">
-          <td>${escapeCell(i.factura||"")}</td>
+      ? items.map(i => `<tr data-id="${i.id}" data-empresa="${escapeCell(i.empresa||'')}" data-factura="${escapeAttr(i.factura||'')}">
+          <td>${documentoCobranzaHtml(i)}</td>
           <td>${escapeCell(i.empresa||"")}</td>
           <td>${escapeCell(i.numero_cliente||"")}</td>
           <td>${escapeCell(i.cliente_nombre||"")}</td>
@@ -6640,8 +6649,8 @@ async function loadColPorVencer() {
     const porCadena = resp.por_cadena || [];
     const cadenas = resp.cadenas || [];
     colPvTbody.innerHTML = items.length
-      ? items.map(i => `<tr data-id="${i.id}" data-empresa="${escapeCell(i.empresa||'')}">
-          <td>${escapeCell(i.factura||"")}</td>
+      ? items.map(i => `<tr data-id="${i.id}" data-empresa="${escapeCell(i.empresa||'')}" data-factura="${escapeAttr(i.factura||'')}">
+          <td>${documentoCobranzaHtml(i)}</td>
           <td>${escapeCell(i.empresa||"")}</td>
           <td>${escapeCell(i.numero_cliente||"")}</td>
           <td>${escapeCell(i.cliente_nombre||"")}</td>
@@ -6726,8 +6735,8 @@ async function loadColCliente() {
     </div></article></div>`;
     const facts = data.facturas || [];
     colCteTbody.innerHTML = facts.length
-      ? facts.map(i => `<tr data-id="${i.id}" data-empresa="${escapeCell(i.empresa||'')}">
-          <td>${escapeCell(i.factura||"")}</td>
+      ? facts.map(i => `<tr data-id="${i.id}" data-empresa="${escapeCell(i.empresa||'')}" data-factura="${escapeAttr(i.factura||'')}">
+          <td>${documentoCobranzaHtml(i)}</td>
           <td>${valueText(i.fecha)}</td>
           <td>${valueText(i.fecha_vencimiento)}</td>
           <td>$${Number(i.total||0).toLocaleString("es-MX",{minimumFractionDigits:2})}</td>
@@ -7331,13 +7340,74 @@ function formaPagoCobranzaSeleccionada() {
   });
 })();
 
+const COBRANZA_NC_CONCEPTOS = {
+  GOURMET: [
+    { noid: "NCD", clave: "H87", unidad: "pz", desc: "DESCUENTO SOBRE COMPRAS" },
+    { noid: "NC", clave: "H87", unidad: "pz", desc: "CANCELACION DE DESCUENTO SOBRE COMPRAS" },
+    { noid: "NCD7", clave: "H87", unidad: "pz", desc: "DESCUENTO LOGISTICO CEDIS" },
+    { noid: "NCD8", clave: "H87", unidad: "pz", desc: "DESCUENTO POR NIVEL DE SERVICIO" },
+  ],
+  EZA: [
+    { noid: "NC006", clave: "ACT", unidad: "pz", desc: "DESCUENTO SOBRE VENTAS" },
+    { noid: "NC007", clave: "ACT", unidad: "pz", desc: "DESCUENTO \"DIFERENCIA EN PRECIO\"" },
+    { noid: "NC003", clave: "ACT", unidad: "pz", desc: "COMISION PAGO ELECTRONICO" },
+    { noid: "0187", clave: "H87", unidad: "pz", desc: "GASTOS DE ENVIO", nota: "usar solo cuando la NC corresponde a envío" },
+    { noid: "NCR001", clave: "ACT", unidad: "No aplica", desc: "NOTA DE CREDITO POR DESCUENTO" },
+  ],
+  DEFAULT: [
+    { noid: "NC006", clave: "ACT", unidad: "pz", desc: "DESCUENTO SOBRE VENTAS" },
+  ],
+};
+
+function conceptosNcCobranzaPorEmpresa(empresa) {
+  const txt = String(empresa || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  if (txt.includes("GOURMET") || txt.includes("GES")) return COBRANZA_NC_CONCEPTOS.GOURMET;
+  if (txt.includes("EZA")) return COBRANZA_NC_CONCEPTOS.EZA;
+  return COBRANZA_NC_CONCEPTOS.DEFAULT;
+}
+
+function refrescarConceptosNcCobranza() {
+  const box = document.getElementById("col-pay-nc-concepto-box");
+  if (!box) return;
+  const esNc = colPayMode === "NOTA_CREDITO";
+  box.style.display = esNc ? "" : "none";
+  if (!esNc) return;
+  const empresa = document.getElementById("col-pay-empresa")?.value || "";
+  const conceptos = conceptosNcCobranzaPorEmpresa(empresa);
+  const select = document.getElementById("col-pay-nc-concepto");
+  const previo = select?.value || "";
+  if (select) {
+    select.innerHTML = conceptos.map(c => {
+      const nota = c.nota ? ` (${c.nota})` : "";
+      return `<option value="${escapeAttr(c.noid)}">${escapeCell(c.noid)} - ${escapeCell(c.desc)}${escapeCell(nota)}</option>`;
+    }).join("");
+    if (previo && conceptos.some(c => c.noid === previo)) select.value = previo;
+  }
+  aplicarConceptoNcCobranza();
+}
+
+function aplicarConceptoNcCobranza() {
+  const empresa = document.getElementById("col-pay-empresa")?.value || "";
+  const conceptos = conceptosNcCobranzaPorEmpresa(empresa);
+  const noid = document.getElementById("col-pay-nc-concepto")?.value || "";
+  const c = conceptos.find(x => x.noid === noid) || conceptos[0] || {};
+  const set = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.value = val || "";
+  };
+  set("col-pay-nc-noid", c.noid);
+  set("col-pay-nc-clave-unidad", c.clave);
+  set("col-pay-nc-unidad", c.unidad);
+  set("col-pay-nc-desc", c.desc);
+}
+
 function openColPayModal(mode, prefill) {
   colPayMode = mode;
   const titles = { PAGO: "Registrar pago", ANTICIPO: "Registrar anticipo", NOTA_CREDITO: "Nota de cr\u00e9dito", AJUSTE: "Ajuste" };
   document.getElementById("col-pay-title").textContent = titles[mode] || "Registrar movimiento";
   document.getElementById("col-pay-message").textContent = "";
   document.getElementById("col-pay-fecha").value = new Date().toISOString().slice(0,10);
-  prepararFormasPagoCobranza(mode === "NOTA_CREDITO" ? "99" : "03");
+  prepararFormasPagoCobranza(mode === "NOTA_CREDITO" ? "15" : "03");
   document.getElementById("col-pay-ref").value = "";
   document.getElementById("col-pay-obs").value = "";
   document.getElementById("col-pay-saldo-disponible").textContent = "$0.00";
@@ -7351,6 +7421,7 @@ function openColPayModal(mode, prefill) {
   const showApps = mode === "PAGO" || mode === "NOTA_CREDITO";
   document.getElementById("col-pay-aplicaciones-table").closest(".desktop-group").style.display = showApps ? "" : "none";
   document.getElementById("col-pay-modal").classList.remove("hidden");
+  refrescarConceptosNcCobranza();
   const tbody = document.getElementById("col-pay-aplicaciones-table").querySelector("tbody");
   if (prefill && prefill.apps && prefill.apps.length) {
     const pends = prefill.apps.map(a => Math.max(0, a._saldoOriginal - a.monto_aplicado));
@@ -7370,9 +7441,12 @@ function openColPayModal(mode, prefill) {
       </tr>`;
     }).join("");
     calcPayTotal();
-    if (prefill.empresa) document.getElementById("col-pay-empresa").value = prefill.empresa;
-    if (prefill.cliente) document.getElementById("col-pay-cliente").value = prefill.cliente;
-    if (prefill.empresa && prefill.cliente) loadColPayCustomerName(prefill.empresa, prefill.cliente);
+    ensureColEmpresas().then(() => {
+      if (prefill.empresa) document.getElementById("col-pay-empresa").value = prefill.empresa;
+      refrescarConceptosNcCobranza();
+      if (prefill.cliente) document.getElementById("col-pay-cliente").value = prefill.cliente;
+      if (prefill.empresa && prefill.cliente) loadColPayCustomerName(prefill.empresa, prefill.cliente);
+    });
     if (prefill.empresa && prefill.cliente) {
       apiJson(`/api/collections/portfolio?empresa=${encodeURIComponent(prefill.empresa)}&numero_cliente=${encodeURIComponent(prefill.cliente)}`, { headers: authHeaders() }).then(items => {
         const arr = Array.isArray(items) ? items : (items.items || []);
@@ -7402,6 +7476,7 @@ function openColPayModal(mode, prefill) {
       if (prefill.cliente) document.getElementById("col-pay-cliente").value = prefill.cliente;
       if (prefill.empresa && prefill.cliente) loadColPayApps();
     }
+    refrescarConceptosNcCobranza();
   });
 }
 
@@ -7526,7 +7601,7 @@ function buildInvFromRow(tr) {
   if (!cells.length) return null;
   const cLen = cells.length;
   const r = { id: parseInt(tr.dataset.id) || 0, factura: "", empresa: tr.dataset.empresa || "", numero_cliente: "", cliente_nombre: "", fecha: "", fecha_vencimiento: "", total: 0, pagos_aplicados: 0, saldo: 0, estatus_cobranza: "", vendedor: "" };
-  r.factura = cells[0]?.textContent?.trim() || "";
+  r.factura = tr.dataset.factura || cells[0]?.textContent?.trim() || "";
   if (cLen === 12) {
     // Cartera: factura, empresa, cliente, nombre, fecha, vencto, dias, total, pagado, saldo, estatus, vendedor
     r.empresa = r.empresa || cells[1]?.textContent?.trim() || "";
@@ -8016,6 +8091,12 @@ async function submitColPay(event) {
       observaciones: document.getElementById("col-pay-obs").value,
       aplicaciones: apps,
     };
+    if (colPayMode === "NOTA_CREDITO") {
+      payload.nota_credito_no_identificacion = document.getElementById("col-pay-nc-noid")?.value || "";
+      payload.nota_credito_clave_unidad = document.getElementById("col-pay-nc-clave-unidad")?.value || "";
+      payload.nota_credito_unidad = document.getElementById("col-pay-nc-unidad")?.value || "";
+      payload.nota_credito_descripcion = document.getElementById("col-pay-nc-desc")?.value || "";
+    }
     const data = await apiJson("/api/collections/payments", {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
@@ -8070,12 +8151,25 @@ async function timbrarReciboCobranza(reciboId, tipo, formaPagoRegistrada) {
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ forma_pago: formaPago }),
     });
+    if (res?.procesado === false || res?.bloqueo_pac) {
+      const detalle = typeof res?.detalle === "string" ? res.detalle : "El PAC no devolvió un detalle adicional.";
+      const prexml = res?.prexml_path ? `\n\nSe conservó el XML pre-PAC para revisión:\n${res.prexml_path}` : "";
+      alert(`El documento no fue timbrado.\n\n${detalle}\n\nNo se consumió ningún folio ni se generó UUID.${prexml}`);
+      await Promise.allSettled([
+        loadColRecibos?.(),
+        esPago ? loadColPagMovimientos?.() : loadColNotas?.(),
+      ]);
+      return;
+    }
     const d = res.detalle || {};
     alert(`${res.mensaje || "Documento timbrado."}\nFolio: ${(d.serie || "") + (d.folio_cfdi || "")}\nUUID: ${d.uuid || ""}`);
     await Promise.allSettled([
       loadColRecibos?.(),
       esPago ? loadColPagMovimientos?.() : loadColNotas?.(),
     ]);
+    // Al concluir el timbrado se vuelve a abrir el comprobante para que el
+    // usuario pueda imprimirlo o enviarlo sin tener que buscarlo de nuevo.
+    await showColComprobante(reciboId);
   } catch (e) {
     const msg = e.message || String(e);
     if (msg.includes("debe estar timbrada")) {
@@ -8302,11 +8396,26 @@ async function showColComprobante(reciboId, reciboId2) {
     });
     const tipoPrincipal = String(reciboPrincipal.tipo_recibo || "").trim().toUpperCase();
     const timbrarBtn = document.getElementById("col-rec-timbrar");
+    const correoBtn = document.getElementById("col-rec-email");
+    const folioFiscal = String(reciboPrincipal.cfdi_documento || "").trim();
+    const yaTimbrado = String(reciboPrincipal.cfdi_estatus || "").trim().toUpperCase() === "TIMBRADA" && !!folioFiscal;
     if (timbrarBtn) {
       const esTimbrable = tipoPrincipal === "PAGO" || tipoPrincipal === "NOTA_CREDITO";
-      timbrarBtn.classList.toggle("hidden", !esTimbrable);
+      timbrarBtn.classList.toggle("hidden", !esTimbrable || yaTimbrado);
       timbrarBtn.textContent = tipoPrincipal === "NOTA_CREDITO" ? "Timbrar nota de crédito" : "Timbrar complemento";
     }
+    if (correoBtn) {
+      correoBtn.dataset.folioFiscal = folioFiscal;
+      correoBtn.dataset.empresa = String(reciboPrincipal.empresa || "");
+      correoBtn.dataset.numeroCliente = String(reciboPrincipal.numero_cliente || "");
+      correoBtn.classList.toggle("hidden", !yaTimbrado);
+    }
+    ["col-rec-download-pdf", "col-rec-download-xml"].forEach((id) => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      btn.dataset.folioFiscal = folioFiscal;
+      btn.classList.toggle("hidden", !yaTimbrado);
+    });
     const mostrarPruebas = cobranzaModoPruebasActivo();
     ["col-rec-sellar", "col-rec-paquete"].forEach((id) => {
       document.getElementById(id)?.classList.toggle("hidden", !mostrarPruebas);
@@ -12305,6 +12414,17 @@ function initCollections() {
     colPagMovTbody.querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected"));
     tr.classList.add("selected");
   });
+  // Un movimiento de cobranza no es una factura: el doble clic debe abrir su
+  // comprobante, no el Kardex comercial de facturas.
+  colPagMovTbody?.addEventListener("dblclick", async (e) => {
+    const tr = e.target.closest("tr[data-id]");
+    if (!tr) return;
+    e.preventDefault();
+    e.stopPropagation();
+    colPagMovTbody.querySelectorAll("tr.selected").forEach((r) => r.classList.remove("selected"));
+    tr.classList.add("selected");
+    await showColComprobante(tr.dataset.id);
+  }, true);
   colPagEmpresa?.addEventListener("change", () => { if (token) { collectionsLoaded = false; loadCollections(); } });
   colPagCargar?.addEventListener("click", () => { if (token) { collectionsLoaded = false; loadCollections(); } });
   colPagRegistrar?.addEventListener("click", () => openColPayModal("PAGO", { empresa: colPagEmpresa?.value, cliente: colPagCliente?.value }));
@@ -12358,6 +12478,15 @@ function initCollections() {
     colNcMovTbody.querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected"));
     tr.classList.add("selected");
   });
+  colNcMovTbody?.addEventListener("dblclick", async (e) => {
+    const tr = e.target.closest("tr[data-id]");
+    if (!tr) return;
+    e.preventDefault();
+    e.stopPropagation();
+    colNcMovTbody.querySelectorAll("tr.selected").forEach((r) => r.classList.remove("selected"));
+    tr.classList.add("selected");
+    await showColComprobante(tr.dataset.id);
+  }, true);
   colNcEmpresa?.addEventListener("change", () => { if (token) { collectionsLoaded = false; loadCollections(); } });
   colNcCargar?.addEventListener("click", () => { if (token) { collectionsLoaded = false; loadCollections(); } });
   colNcRegistrar?.addEventListener("click", () => openColPayModal("NOTA_CREDITO", { empresa: colNcEmpresa?.value, cliente: colNcCliente?.value }));
@@ -12488,11 +12617,23 @@ function initCollections() {
     document.getElementById("col-import-modal")?.classList.remove("hidden");
     if (!document.getElementById("col-import-fecha").value) document.getElementById("col-import-fecha").value = new Date().toISOString().slice(0,10);
   });
+  document.getElementById("collections-import-cfdi-btn")?.addEventListener("click", async () => {
+    if (!token) return;
+    await ensureColEmpresas();
+    const sel = document.getElementById("col-import-cfdi-empresa");
+    const companies = window._empresaOptions || [];
+    sel.innerHTML = '<option value="">Detectar por XML / Excel</option>' + companies.map(c => `<option value="${c.code || c.name}">${escapeCell(c.name || c.code)}</option>`).join("");
+    document.getElementById("col-import-cfdi-modal")?.classList.remove("hidden");
+  });
 
   // Payment modal
   document.getElementById("col-pay-close")?.addEventListener("click", closeColPayModal);
   document.getElementById("col-pay-modal")?.addEventListener("click", (e) => { if (e.target === e.currentTarget) closeColPayModal(); });
-  document.getElementById("col-pay-empresa")?.addEventListener("change", loadColPayApps);
+  document.getElementById("col-pay-empresa")?.addEventListener("change", () => {
+    refrescarConceptosNcCobranza();
+    loadColPayApps();
+  });
+  document.getElementById("col-pay-nc-concepto")?.addEventListener("change", aplicarConceptoNcCobranza);
   document.getElementById("col-pay-cliente")?.addEventListener("change", loadColPayApps);
   document.getElementById("col-pay-cliente")?.addEventListener("keydown", (e) => { if (e.key === "Enter") loadColPayApps(); });
   document.getElementById("col-pay-cliente")?.addEventListener("blur", loadColPayApps);
@@ -12538,6 +12679,46 @@ function initCollections() {
   // Import modal
   document.getElementById("col-import-close")?.addEventListener("click", () => document.getElementById("col-import-modal").classList.add("hidden"));
   document.getElementById("col-import-modal")?.addEventListener("click", (e) => { if (e.target === e.currentTarget) document.getElementById("col-import-modal").classList.add("hidden"); });
+  document.getElementById("col-import-plantilla")?.addEventListener("click", () => {
+    if (typeof XLSX === "undefined") {
+      alert("No se pudo cargar el componente para generar la plantilla Excel.");
+      return;
+    }
+    const encabezados = [
+      "Factura", "Cliente", "Nombre cliente", "Fecha factura", "Fecha vencimiento",
+      "Días crédito", "Total", "Pagado", "Saldo", "Vendedor", "XML", "Observaciones"
+    ];
+    const ejemplo = [
+      "EJEMPLO-001", "100001", "NOMBRE DEL CLIENTE", "01/08/2026", "31/08/2026",
+      30, 1000, 0, 1000, "VENDEDOR", "EJEMPLO-001.xml", ""
+    ];
+    encabezados[0] = "Factura fiscal";
+    ejemplo[0] = "FE13";
+    encabezados.splice(-1, 0, "UUID");
+    ejemplo.splice(-1, 0, "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX");
+    encabezados.splice(1, 0, "Folio interno");
+    ejemplo.splice(1, 0, "00A00000");
+    const notas = [
+      ["INSTRUCCIONES"],
+      ["Conserva los encabezados de la primera fila."],
+      ["Factura y Cliente son obligatorios."],
+      ["Fechas: DD/MM/AAAA o AAAA-MM-DD. Importes sin símbolos de moneda."],
+      ["Días crédito y Fecha vencimiento son opcionales: si faltan, se toman los días de crédito del cliente y se calcula el vencimiento."],
+      ["El XML es opcional; si lo indicas, sube también un ZIP con ese archivo XML."],
+      ["Elimina la fila EJEMPLO-001 antes de importar tus saldos reales."]
+    ];
+    const libro = XLSX.utils.book_new();
+    const hoja = XLSX.utils.aoa_to_sheet([encabezados, ejemplo]);
+    hoja["!cols"] = [
+      { wch: 18 }, { wch: 14 }, { wch: 36 }, { wch: 16 }, { wch: 18 }, { wch: 14 },
+      { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 24 }, { wch: 30 }, { wch: 42 }
+    ];
+    hoja["!cols"].splice(-1, 0, { wch: 39 });
+    hoja["!cols"].splice(1, 0, { wch: 18 });
+    XLSX.utils.book_append_sheet(libro, hoja, "Saldos");
+    XLSX.utils.book_append_sheet(libro, XLSX.utils.aoa_to_sheet(notas), "Instrucciones");
+    XLSX.writeFile(libro, "plantilla_importacion_saldos.xlsx");
+  });
   function colImportNormKey(value) {
     return String(value || "")
       .trim()
@@ -12547,7 +12728,8 @@ function initCollections() {
       .replace(/^_+|_+$/g, "");
   }
   const colImportHeaderMap = {
-    factura: "factura", folio: "factura", documento: "factura", doc: "factura",
+    factura: "factura", factura_fiscal: "factura", folio_fiscal: "factura", folio: "factura", documento: "factura", doc: "factura",
+    folio_interno: "folio_interno", interno: "folio_interno", folio_sae: "folio_interno",
     cliente: "cliente_numero", numero_cliente: "cliente_numero", cliente_numero: "cliente_numero", num_cliente: "cliente_numero", codigo: "cliente_numero",
     nombre: "cliente_nombre", cliente_nombre: "cliente_nombre", nombre_cliente: "cliente_nombre", tienda: "cliente_nombre", cliente_nombre_tienda: "cliente_nombre",
     fecha: "fecha_factura", fecha_factura: "fecha_factura", emision: "fecha_factura",
@@ -12558,8 +12740,9 @@ function initCollections() {
     saldo: "saldo", saldo_inicial: "saldo",
     vendedor: "vendedor", observaciones: "observaciones", comentarios: "observaciones",
     xml: "xml_nombre", archivo_xml: "xml_nombre", nombre_xml: "xml_nombre", xml_nombre: "xml_nombre", cfdi_xml: "xml_nombre",
+    uuid: "uuid", uuid_cfdi: "uuid",
   };
-  const colImportPositional = ["factura", "cliente_numero", "cliente_nombre", "fecha_factura", "fecha_vencimiento", "total", "saldo", "vendedor", "xml_nombre", "observaciones"];
+  const colImportPositional = ["factura", "cliente_numero", "cliente_nombre", "fecha_factura", "fecha_vencimiento", "total", "saldo", "vendedor", "xml_nombre", "uuid", "observaciones"];
   function colImportParseNumber(value) {
     if (value == null || value === "") return 0;
     if (typeof value === "number") return value;
@@ -12689,6 +12872,134 @@ function initCollections() {
     }
   });
 
+  // Importar CFDI externos de cobranza
+  document.getElementById("col-import-cfdi-close")?.addEventListener("click", () => document.getElementById("col-import-cfdi-modal").classList.add("hidden"));
+  document.getElementById("col-import-cfdi-modal")?.addEventListener("click", (e) => { if (e.target === e.currentTarget) document.getElementById("col-import-cfdi-modal").classList.add("hidden"); });
+  document.getElementById("col-import-cfdi-plantilla")?.addEventListener("click", () => {
+    if (typeof XLSX === "undefined") {
+      alert("No se pudo cargar el componente para generar la plantilla Excel.");
+      return;
+    }
+    const encabezados = ["Tipo", "Empresa", "Cliente", "Nombre cliente", "Recibo", "Factura", "Serie", "Folio", "UUID", "XML", "Monto", "Fecha"];
+    const ejemplo = ["PAGO", "EZA2007", "100001", "NOMBRE DEL CLIENTE", "PAG-20260801-0001", "EZ19", "REPEZA", "1", "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX", "EZA070521MT4GCOMP0000000001.xml", 1000, "01/08/2026"];
+    const notas = [
+      ["INSTRUCCIONES"],
+      ["Sube un ZIP con los XML. Puede contener una carpeta llamada comprobantes; el sistema usa el nombre del archivo."],
+      ["XML, UUID o Serie+Folio sirven para encontrar el comprobante dentro del ZIP."],
+      ["Recibo es opcional. Si coincide con un recibo local, el CFDI queda vinculado a ese recibo."],
+      ["Si no hay recibo local, el CFDI queda registrado como externo para descarga y consulta sin afectar saldos."]
+    ];
+    const libro = XLSX.utils.book_new();
+    const hoja = XLSX.utils.aoa_to_sheet([encabezados, ejemplo]);
+    hoja["!cols"] = [
+      { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 34 }, { wch: 22 }, { wch: 18 },
+      { wch: 14 }, { wch: 12 }, { wch: 39 }, { wch: 42 }, { wch: 14 }, { wch: 14 }
+    ];
+    XLSX.utils.book_append_sheet(libro, hoja, "CFDI Cobranza");
+    XLSX.utils.book_append_sheet(libro, XLSX.utils.aoa_to_sheet(notas), "Instrucciones");
+    XLSX.writeFile(libro, "plantilla_importacion_cfdi_cobranza.xlsx");
+  });
+  const colCfdiImportHeaderMap = {
+    tipo: "tipo", documento_tipo: "tipo", tipo_documento: "tipo", comprobante: "tipo",
+    empresa: "empresa",
+    cliente: "cliente_numero", numero_cliente: "cliente_numero", cliente_numero: "cliente_numero", codigo: "cliente_numero",
+    nombre: "cliente_nombre", nombre_cliente: "cliente_nombre", cliente_nombre: "cliente_nombre", tienda: "cliente_nombre",
+    recibo: "recibo", folio_recibo: "recibo", recibo_folio: "recibo", pago: "recibo",
+    factura: "factura", documento: "factura", factura_relacionada: "factura", folio_factura: "factura",
+    serie: "serie", folio: "folio", folio_cfdi: "folio",
+    uuid: "uuid", uuid_cfdi: "uuid",
+    xml: "xml_nombre", archivo_xml: "xml_nombre", nombre_xml: "xml_nombre", xml_nombre: "xml_nombre", comprobante_xml: "xml_nombre",
+    monto: "monto", importe: "monto", total: "monto",
+    fecha: "fecha", fecha_timbrado: "fecha", fecha_pago: "fecha",
+  };
+  const colCfdiImportPositional = ["tipo", "empresa", "cliente_numero", "recibo", "factura", "serie", "folio", "uuid", "xml_nombre", "monto", "fecha"];
+  function colCfdiImportRowsFromMatrix(matrix) {
+    const clean = (matrix || []).map(row => (row || []).map(v => v == null ? "" : String(v).trim())).filter(row => row.some(Boolean));
+    if (!clean.length) return [];
+    const maybeHeaders = clean[0].map(v => colCfdiImportHeaderMap[colImportNormKey(v)] || "");
+    const hasHeaders = maybeHeaders.filter(Boolean).length >= 3;
+    const headers = hasHeaders ? maybeHeaders : colCfdiImportPositional;
+    const dataRows = hasHeaders ? clean.slice(1) : clean;
+    return dataRows.map(parts => {
+      const row = {};
+      headers.forEach((key, idx) => {
+        if (!key) return;
+        row[key] = parts[idx] ?? "";
+      });
+      row.monto = colImportParseNumber(row.monto);
+      return row;
+    }).filter(row => row.tipo || row.xml_nombre || row.uuid || row.folio || row.factura || row.recibo);
+  }
+  function colCfdiImportRowsFromText(text) {
+    return colCfdiImportRowsFromMatrix(String(text || "").split(/\r?\n/).filter(l => l.trim()).map(colImportSplitLine));
+  }
+  async function colCfdiImportRowsFromFile(file) {
+    if (!file) return [];
+    const name = String(file.name || "").toLowerCase();
+    if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array", cellDates: false });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      return colCfdiImportRowsFromMatrix(XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" }));
+    }
+    const text = await file.text();
+    return colCfdiImportRowsFromText(text);
+  }
+  document.getElementById("col-import-cfdi-file")?.addEventListener("change", async (e) => {
+    const msg = document.getElementById("col-import-cfdi-message");
+    try {
+      const rows = await colCfdiImportRowsFromFile(e.target.files?.[0]);
+      msg.textContent = rows.length ? `${rows.length} CFDI listos desde archivo` : "El archivo no tiene filas válidas";
+      msg.style.color = rows.length ? "green" : "red";
+    } catch (err) {
+      msg.textContent = err.message || "No se pudo leer el archivo";
+      msg.style.color = "red";
+    }
+  });
+  document.getElementById("col-import-cfdi-xml-zip")?.addEventListener("change", (e) => {
+    const msg = document.getElementById("col-import-cfdi-message");
+    const file = e.target.files?.[0];
+    if (!file) return;
+    msg.textContent = `ZIP listo: ${file.name}`;
+    msg.style.color = "green";
+  });
+  document.getElementById("col-import-cfdi-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById("col-import-cfdi-message");
+    msg.textContent = "Importando CFDI...";
+    msg.style.color = "";
+    try {
+      const file = document.getElementById("col-import-cfdi-file")?.files?.[0];
+      const xmlZip = document.getElementById("col-import-cfdi-xml-zip")?.files?.[0];
+      const text = document.getElementById("col-import-cfdi-rows").value.trim();
+      const rows = file ? await colCfdiImportRowsFromFile(file) : colCfdiImportRowsFromText(text);
+      if (!xmlZip) { msg.textContent = "Selecciona el ZIP con los XML"; msg.style.color = "red"; return; }
+      if (!rows.length) { msg.textContent = "No hay datos para importar"; msg.style.color = "red"; return; }
+      const formData = new FormData();
+      formData.append("payload", JSON.stringify({
+        empresa: document.getElementById("col-import-cfdi-empresa").value,
+        rows,
+      }));
+      formData.append("xml_zip", xmlZip);
+      const data = await apiJson("/timbrado/cobranza/importar-cfdi-externos", {
+        method: "POST",
+        headers: authHeaders(),
+        body: formData,
+      });
+      let resumen = `Importados ${data.importados || 0} CFDI`;
+      if (data.vinculados) resumen += `, vinculados ${data.vinculados}`;
+      if (data.duplicados) resumen += `, duplicados ${data.duplicados}`;
+      if (data.omitidos) resumen += `, omitidos ${data.omitidos}`;
+      if (data.xmls_faltantes?.length) resumen += `, XML no encontrados ${data.xmls_faltantes.length}`;
+      msg.textContent = resumen;
+      msg.style.color = "green";
+      setTimeout(() => { document.getElementById("col-import-cfdi-modal").classList.add("hidden"); loadCollections(); }, 1500);
+    } catch (err) {
+      msg.textContent = err.message || "Error al importar CFDI";
+      msg.style.color = "red";
+    }
+  });
+
   // Auth modal
   document.getElementById("col-aut-close")?.addEventListener("click", () => document.getElementById("col-aut-modal").classList.add("hidden"));
   document.getElementById("col-aut-modal")?.addEventListener("click", (e) => { if (e.target === e.currentTarget) document.getElementById("col-aut-modal").classList.add("hidden"); });
@@ -12735,6 +13046,35 @@ function initCollections() {
     const etiqueta = tipo === "NOTA_CREDITO" ? "la nota de credito CFDI" : "el complemento de pago REP 2.0";
     if (!confirm(`¿Deseas timbrar ${etiqueta} de este recibo?`)) return;
     await timbrarReciboCobranza(id, btn.dataset.tipo, btn.dataset.formaPago);
+  });
+  document.getElementById("col-rec-email")?.addEventListener("click", async () => {
+    const btn = document.getElementById("col-rec-email");
+    const folioFiscal = String(btn?.dataset.folioFiscal || "").trim();
+    if (!folioFiscal) return alert("Este recibo no tiene un CFDI timbrado para enviar.");
+    try {
+      await sendCfdiByEmailWithRecipients({
+        folioFiscal,
+        empresa: btn.dataset.empresa || "",
+        numeroCliente: btn.dataset.numeroCliente || "",
+      });
+    } catch (e) {
+      alert(`No se pudo enviar el CFDI: ${e.message || e}`);
+    }
+  });
+  ["pdf", "xml"].forEach((tipoArchivo) => {
+    document.getElementById(`col-rec-download-${tipoArchivo}`)?.addEventListener("click", async () => {
+      const btn = document.getElementById(`col-rec-download-${tipoArchivo}`);
+      const folioFiscal = String(btn?.dataset.folioFiscal || "").trim();
+      if (!folioFiscal) return alert("Este recibo no tiene un CFDI timbrado para descargar.");
+      try {
+        const response = await fetch(`/timbrado/cfdi-emitidos/${encodeURIComponent(folioFiscal)}/${tipoArchivo}`, {
+          headers: authHeaders(),
+        });
+        await descargarBlobRespuesta(response, `${folioFiscal}.${tipoArchivo}`);
+      } catch (e) {
+        alert(`No se pudo descargar el ${tipoArchivo.toUpperCase()}: ${e.message || e}`);
+      }
+    });
   });
   document.getElementById("col-rec-sellar")?.addEventListener("click", async () => {
     const btn = document.getElementById("col-rec-sellar");
@@ -17935,6 +18275,14 @@ async function cargarTimbradoConfig() {
     document.getElementById("timb-cfg-serie-pago").value = cfg.serie_complemento_pago || "PAG";
     document.getElementById("timb-cfg-serie-nc").value = cfg.serie_nota_credito || "NC";
     document.getElementById("timb-cfg-folio").value = cfg.folio_actual || "";
+    document.getElementById("timb-cfg-folio-pago").value = cfg.folio_complemento_pago || "1";
+    document.getElementById("timb-cfg-folio-nc").value = cfg.folio_nota_credito || "1";
+    const esGourmet = String(cfg.rfc_emisor || "").trim().toUpperCase() === "GES090312DJ1";
+    document.getElementById("timb-cfg-nc-noid").value = cfg.nota_credito_no_identificacion || (esGourmet ? "NCD" : "NC006");
+    document.getElementById("timb-cfg-nc-clave-unidad").value = cfg.nota_credito_clave_unidad || (esGourmet ? "H87" : "ACT");
+    document.getElementById("timb-cfg-nc-unidad").value = cfg.nota_credito_unidad || "pz";
+    document.getElementById("timb-cfg-nc-desc").value = cfg.nota_credito_descripcion || (esGourmet ? "DESCUENTO SOBRE COMPRAS" : "DESCUENTO SOBRE VENTAS");
+    document.getElementById("timb-cfg-nc-metodo-99").value = cfg.nota_credito_metodo_pago_99 || "PPD";
     document.getElementById("timb-cfg-prov").value = cfg.proveedor || "";
     document.getElementById("timb-cfg-activo").checked = !!cfg.timbrado_activo;
     document.getElementById("timb-cfg-auto").checked = !!cfg.facturacion_automatica;
@@ -18217,6 +18565,13 @@ async function guardarTimbradoConfig(options = {}) {
     serie_cfdi: document.getElementById("timb-cfg-serie").value,
     serie_complemento_pago: document.getElementById("timb-cfg-serie-pago").value || "PAG",
     serie_nota_credito: document.getElementById("timb-cfg-serie-nc").value || "NC",
+    folio_complemento_pago: document.getElementById("timb-cfg-folio-pago").value || "1",
+    folio_nota_credito: document.getElementById("timb-cfg-folio-nc").value || "1",
+    nota_credito_no_identificacion: document.getElementById("timb-cfg-nc-noid").value,
+    nota_credito_clave_unidad: document.getElementById("timb-cfg-nc-clave-unidad").value,
+    nota_credito_unidad: document.getElementById("timb-cfg-nc-unidad").value,
+    nota_credito_descripcion: document.getElementById("timb-cfg-nc-desc").value,
+    nota_credito_metodo_pago_99: document.getElementById("timb-cfg-nc-metodo-99").value || "PPD",
     folio_actual: document.getElementById("timb-cfg-folio").value,
     proveedor: document.getElementById("timb-cfg-prov").value,
     timbrado_activo: document.getElementById("timb-cfg-activo").checked,

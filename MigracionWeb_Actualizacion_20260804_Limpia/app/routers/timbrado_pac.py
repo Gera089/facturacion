@@ -379,16 +379,16 @@ def _credenciales_cancelacion_finkok(config: dict) -> tuple[str, str]:
     cer_path = str((config or {}).get("csd_cer_path") or "").strip()
     key_path = str((config or {}).get("csd_key_path") or "").strip()
     key_password = str((config or {}).get("csd_key_password") or "")
-    # Finkok uses a passphrase of its own to encrypt the cancellation key.
-    # It is not necessarily the password used to authenticate the PAC account.
-    # The fallback preserves existing installations until the separate value is set.
+    # Finkok can provide a separate passphrase for cancellation. Existing
+    # accounts that do not have one configured continue using the PAC password,
+    # matching the established Gourmet España cancellation flow.
     pac_password = str((config or {}).get("pac_cancel_passphrase") or (config or {}).get("pac_password") or "")
     _file_base64(cer_path, ".cer")
     _file_base64(key_path, ".key")
     if not key_password:
         raise PacTimbradoError("Falta password del CSD para cancelar en Finkok.")
     if not pac_password:
-        raise PacTimbradoError("Falta el passphrase de cancelación Finkok.")
+        raise PacTimbradoError("Falta password PAC o passphrase de cancelacion Finkok.")
 
     cert_pem = b""
     cert_error = ""
@@ -517,6 +517,13 @@ def _cancelar_finkok(config: dict, uuid_val: str, motivo: str, uuid_sustitucion:
     )
     if not aceptada:
         detalle = estatus_cancelacion or cod_estatus or estatus_uuid or "sin estatus"
+        if str(detalle).strip() == "302":
+            raise PacTimbradoError(
+                "Finkok devolvio estatus 302 (sello de cancelacion no aceptado). "
+                "No se marco el CFDI como cancelado ni se libero el folio interno. "
+                "Finkok reporta que este codigo suele ocurrir por intermitencia SAT; "
+                "consulta Estatus SAT y, si continua igual despues de unos minutos, reportalo a soporte Finkok con el UUID."
+            )
         raise PacTimbradoError(f"Finkok no aceptó la cancelación. Estatus: {detalle}")
     return ResultadoCancelacionPac(
         uuid=uuid_respuesta or uuid_val,

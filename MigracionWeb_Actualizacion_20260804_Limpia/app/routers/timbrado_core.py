@@ -310,6 +310,20 @@ def _asegurar_columnas_empresas_timbrado(conn):
             conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN serie_complemento_pago VARCHAR(20) NOT NULL DEFAULT 'PAG'")
         if "serie_nota_credito" not in columnas:
             conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN serie_nota_credito VARCHAR(20) NOT NULL DEFAULT 'NC'")
+        if "folio_complemento_pago" not in columnas:
+            conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN folio_complemento_pago VARCHAR(40) NOT NULL DEFAULT '1'")
+        if "folio_nota_credito" not in columnas:
+            conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN folio_nota_credito VARCHAR(40) NOT NULL DEFAULT '1'")
+        if "nota_credito_no_identificacion" not in columnas:
+            conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN nota_credito_no_identificacion VARCHAR(40) NOT NULL DEFAULT ''")
+        if "nota_credito_clave_unidad" not in columnas:
+            conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN nota_credito_clave_unidad VARCHAR(10) NOT NULL DEFAULT ''")
+        if "nota_credito_unidad" not in columnas:
+            conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN nota_credito_unidad VARCHAR(20) NOT NULL DEFAULT ''")
+        if "nota_credito_descripcion" not in columnas:
+            conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN nota_credito_descripcion VARCHAR(255) NOT NULL DEFAULT ''")
+        if "nota_credito_metodo_pago_99" not in columnas:
+            conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN nota_credito_metodo_pago_99 VARCHAR(3) NOT NULL DEFAULT 'PPD'")
     except Exception:
         try:
             rows = conn.execute("PRAGMA table_info(empresas_timbrado)").fetchall()
@@ -324,6 +338,20 @@ def _asegurar_columnas_empresas_timbrado(conn):
                 conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN serie_complemento_pago TEXT DEFAULT 'PAG'")
             if "serie_nota_credito" not in columnas:
                 conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN serie_nota_credito TEXT DEFAULT 'NC'")
+            if "folio_complemento_pago" not in columnas:
+                conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN folio_complemento_pago TEXT DEFAULT '1'")
+            if "folio_nota_credito" not in columnas:
+                conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN folio_nota_credito TEXT DEFAULT '1'")
+            if "nota_credito_no_identificacion" not in columnas:
+                conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN nota_credito_no_identificacion TEXT DEFAULT ''")
+            if "nota_credito_clave_unidad" not in columnas:
+                conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN nota_credito_clave_unidad TEXT DEFAULT ''")
+            if "nota_credito_unidad" not in columnas:
+                conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN nota_credito_unidad TEXT DEFAULT ''")
+            if "nota_credito_descripcion" not in columnas:
+                conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN nota_credito_descripcion TEXT DEFAULT ''")
+            if "nota_credito_metodo_pago_99" not in columnas:
+                conn.execute("ALTER TABLE empresas_timbrado ADD COLUMN nota_credito_metodo_pago_99 TEXT DEFAULT 'PPD'")
         except Exception:
             pass
 
@@ -611,6 +639,13 @@ def _asegurar_tablas_timbrado(conn):
             serie_cfdi TEXT DEFAULT '',
             serie_complemento_pago TEXT DEFAULT 'PAG',
             serie_nota_credito TEXT DEFAULT 'NC',
+            folio_complemento_pago TEXT DEFAULT '1',
+            folio_nota_credito TEXT DEFAULT '1',
+            nota_credito_no_identificacion TEXT DEFAULT '',
+            nota_credito_clave_unidad TEXT DEFAULT '',
+            nota_credito_unidad TEXT DEFAULT '',
+            nota_credito_descripcion TEXT DEFAULT '',
+            nota_credito_metodo_pago_99 TEXT DEFAULT 'PPD',
             folio_actual TEXT DEFAULT '',
             csd_cer_path TEXT DEFAULT '',
             csd_key_path TEXT DEFAULT '',
@@ -853,11 +888,14 @@ def guardar_config_timbrado(conn, empresa, datos):
             empresa, timbrado_activo, facturacion_automatica, proveedor, modo_pruebas,
             rfc_emisor, razon_social, regimen_fiscal, cp_fiscal,
             calle, no_exterior, no_interior, colonia, municipio, estado, pais,
-            lugar_expedicion, serie_cfdi, serie_complemento_pago, serie_nota_credito, folio_actual,
+            lugar_expedicion, serie_cfdi, serie_complemento_pago, serie_nota_credito,
+            folio_complemento_pago, folio_nota_credito,
+            nota_credito_no_identificacion, nota_credito_clave_unidad, nota_credito_unidad,
+            nota_credito_descripcion, nota_credito_metodo_pago_99, folio_actual,
             csd_cer_path, csd_key_path, csd_key_password, gln_emisor_supplier,
             pac_url, pac_usuario, pac_password, pac_cancel_passphrase, logo_archivo, output_dir, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(empresa) DO UPDATE SET
             timbrado_activo = excluded.timbrado_activo,
             facturacion_automatica = excluded.facturacion_automatica,
@@ -878,6 +916,13 @@ def guardar_config_timbrado(conn, empresa, datos):
             serie_cfdi = excluded.serie_cfdi,
             serie_complemento_pago = excluded.serie_complemento_pago,
             serie_nota_credito = excluded.serie_nota_credito,
+            folio_complemento_pago = excluded.folio_complemento_pago,
+            folio_nota_credito = excluded.folio_nota_credito,
+            nota_credito_no_identificacion = excluded.nota_credito_no_identificacion,
+            nota_credito_clave_unidad = excluded.nota_credito_clave_unidad,
+            nota_credito_unidad = excluded.nota_credito_unidad,
+            nota_credito_descripcion = excluded.nota_credito_descripcion,
+            nota_credito_metodo_pago_99 = excluded.nota_credito_metodo_pago_99,
             folio_actual = excluded.folio_actual,
             csd_cer_path = excluded.csd_cer_path,
             csd_key_path = excluded.csd_key_path,
@@ -912,6 +957,13 @@ def guardar_config_timbrado(conn, empresa, datos):
             datos.get("serie_cfdi"),
             str(datos.get("serie_complemento_pago") or "PAG").strip() or "PAG",
             str(datos.get("serie_nota_credito") or "NC").strip() or "NC",
+            str(datos.get("folio_complemento_pago") or "1").strip() or "1",
+            str(datos.get("folio_nota_credito") or "1").strip() or "1",
+            str(datos.get("nota_credito_no_identificacion") or "").strip()[:40],
+            str(datos.get("nota_credito_clave_unidad") or "").strip()[:10],
+            str(datos.get("nota_credito_unidad") or "").strip()[:20],
+            str(datos.get("nota_credito_descripcion") or "").strip()[:255],
+            str(datos.get("nota_credito_metodo_pago_99") or "PPD").strip()[:3] or "PPD",
             datos.get("folio_actual"),
             datos.get("csd_cer_path"),
             datos.get("csd_key_path"),
@@ -1234,10 +1286,44 @@ def obtener_receptor_fiscal(conn, empresa, clave_receptor):
     return {}
 
 
+def actualizar_correo_receptor_fiscal(conn, empresa, clave_receptor, correo_envio):
+    """Actualiza sólo el correo sin alterar los datos fiscales ni la addenda."""
+    _asegurar_tablas_timbrado(conn)
+    empresa = _normalizar_empresa(empresa)
+    clave = str(clave_receptor or "").strip()
+    if not empresa or not clave:
+        raise ValueError("Falta empresa o clave del receptor fiscal.")
+    resultado = conn.execute(
+        "UPDATE timbrado_receptores_fiscales SET correo_envio = ?, updated_at = ? WHERE empresa = ? AND clave_receptor = ?",
+        (str(correo_envio or "").strip() or None, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), empresa, clave),
+    )
+    if not resultado.rowcount:
+        raise ValueError("No existe un receptor fiscal para actualizar el correo.")
+
+
 def guardar_receptor_fiscal(conn, datos):
     _asegurar_tablas_timbrado(conn)
+    datos = dict(datos or {})
     empresa = _normalizar_empresa(datos.get("empresa"))
     clave = str(datos.get("clave_receptor") or "").strip()
+    # El perfil se guarda ligado a la clave comercial del cliente.  No se crea
+    # un cliente nuevo: al emitir, la entrega/consignatario permanece en el
+    # cliente original, pero el receptor del CFDI se normaliza al RFC genérico.
+    perfil_fiscal = str(datos.get("perfil_fiscal") or "").strip().upper()
+    if perfil_fiscal == "PUBLICO_GENERAL":
+        config_empresa = obtener_config_timbrado(conn, empresa) if empresa else {}
+        datos.update({
+            "razon_social": "PUBLICO EN GENERAL",
+            "rfc": "XAXX010101000",
+            "regimen_fiscal": "616",
+            "uso_cfdi": "S01",
+            "cp_fiscal": str(config_empresa.get("cp_fiscal") or config_empresa.get("lugar_expedicion") or "").strip(),
+            # Una factura global no debe heredar una addenda comercial del
+            # receptor que se está usando como cliente objetivo.
+            "addenda_activa": False,
+            "addenda_tipo": "",
+            "addenda_config": {},
+        })
     dias_credito = datos.get("dias_credito")
     try:
         dias_credito = int(str(dias_credito).strip()) if str(dias_credito or "").strip() else None
@@ -1937,6 +2023,12 @@ def _detectar_modo_facturacion(factura):
 def _es_venta_mostrador(factura, receptor=None):
     """Identifica el cliente genérico que usa el legado para venta de mostrador."""
     receptor = receptor or {}
+    rfc_receptor = str(receptor.get("rfc") or "").strip().upper()
+    nombre_receptor = str(receptor.get("razon_social") or receptor.get("nombre") or "").strip().upper()
+    # Permite asociar el perfil a cualquier cliente objetivo sin depender de
+    # que el número comercial sea 100000 o 160006.
+    if rfc_receptor == "XAXX010101000" and nombre_receptor == "PUBLICO EN GENERAL":
+        return True
     empresa = _normalizar_empresa(factura.get("empresa"))
     numeros = (
         factura.get("numero_cliente"),
@@ -2017,6 +2109,14 @@ def resolver_receptor_timbrado(conn, conn_legacy, factura, incluir_preview=True)
             ]
             if len(receptores_rfc) == 1:
                 receptor_fiscal = receptores_rfc[0]
+    # El receptor puede ser una razón social distinta de la tienda que recibe.
+    # Fuera de Gourmet España la entrega siempre se toma del cliente origen del
+    # documento comercial; Gourmet conserva su flujo histórico de addendas/GLN.
+    cliente_consignatario = cliente_receptor
+    if _normalizar_empresa(empresa) != _normalizar_empresa("Gourmet España"):
+        cliente_origen_base = _obtener_cliente_por_numero(conn_legacy, empresa, numero_origen) if numero_origen else {}
+        if cliente_origen_base:
+            cliente_consignatario = cliente_origen_base
     consignatario_cfg = obtener_consignatario_cliente(conn, empresa, destino_numero or numero_origen) if incluir_preview else {}
     gln_consignatario = str(consignatario_cfg.get("gln_consignatario") or "").strip()
     if receptor_fiscal:
@@ -2063,16 +2163,16 @@ def resolver_receptor_timbrado(conn, conn_legacy, factura, incluir_preview=True)
             "municipio": str(receptor_fiscal.get("municipio") or cliente_fiscal_base.get("municipio") or "").strip(),
             "estado": str(receptor_fiscal.get("estado") or cliente_fiscal_base.get("estado") or "").strip(),
             "pais": str(receptor_fiscal.get("pais") or cliente_fiscal_base.get("pais") or "").strip(),
-            "consignatario": str(cliente_receptor.get("consignatario") or nombre_origen or "").strip(),
-            "consig_calle": str(cliente_receptor.get("consig_calle") or "").strip(),
-            "consig_no_exterior": str(cliente_receptor.get("consig_no_exterior") or "").strip(),
-            "consig_no_interior": str(cliente_receptor.get("consig_no_interior") or "").strip(),
-            "consig_colonia": str(cliente_receptor.get("consig_colonia") or "").strip(),
-            "consig_municipio": str(cliente_receptor.get("consig_municipio") or "").strip(),
-            "consig_estado": str(cliente_receptor.get("consig_estado") or "").strip(),
-            "consig_pais": str(cliente_receptor.get("consig_pais") or "").strip(),
-            "consig_codigo_postal": str(cliente_receptor.get("consig_codigo_postal") or "").strip(),
-            "no_proveedor": str(cliente_receptor.get("no_proveedor") or "").strip(),
+            "consignatario": str(cliente_consignatario.get("consignatario") or nombre_origen or "").strip(),
+            "consig_calle": str(cliente_consignatario.get("consig_calle") or "").strip(),
+            "consig_no_exterior": str(cliente_consignatario.get("consig_no_exterior") or "").strip(),
+            "consig_no_interior": str(cliente_consignatario.get("consig_no_interior") or "").strip(),
+            "consig_colonia": str(cliente_consignatario.get("consig_colonia") or "").strip(),
+            "consig_municipio": str(cliente_consignatario.get("consig_municipio") or "").strip(),
+            "consig_estado": str(cliente_consignatario.get("consig_estado") or "").strip(),
+            "consig_pais": str(cliente_consignatario.get("consig_pais") or "").strip(),
+            "consig_codigo_postal": str(cliente_consignatario.get("consig_codigo_postal") or "").strip(),
+            "no_proveedor": str(cliente_consignatario.get("no_proveedor") or "").strip(),
             "dias_credito": receptor_fiscal.get("dias_credito") if receptor_fiscal.get("dias_credito") is not None else cliente_receptor.get("dias_credito"),
             "gln_receptor": str(receptor_fiscal.get("gln_receptor") or "").strip(),
             "gln_consignatario": gln_consignatario,
@@ -2213,7 +2313,9 @@ def _snapshot_factura(conn_legacy, factura_id):
         cur.execute(
             """
             SELECT d.cip, d.descripcion, d.cantidad, d.piezas, d.precio, d.importe,
-                   p.unidad, p.iva, p.codigo_barras, p.no_identificacion, p.clave_prod_serv, p.clave_unidad_sat
+                   COALESCE(d.descuento_pct, 0) AS descuento_pct,
+                   COALESCE(d.descuento_importe, 0) AS descuento_importe,
+                   p.unidad, p.iva, p.descuento, p.codigo_barras, p.no_identificacion, p.clave_prod_serv, p.clave_unidad_sat
             FROM factura_detalle d
             LEFT JOIN productos p ON CAST(p.cip AS CHAR) = CAST(d.cip AS CHAR)
             WHERE d.factura_id = %s
@@ -2328,6 +2430,18 @@ def _piezas_por_exhibidor(producto):
 def _cantidad_base_producto(producto, modo_producto):
     if modo_producto == "KILOS":
         return _float_producto(producto, "cantidad")
+    # En un exhibidor `cantidad` expresa cuántos exhibidores se venden y
+    # `piezas` las unidades internas. Para el CFDI la cantidad se desglosa a
+    # piezas más adelante, pero el precio registrado sigue siendo por
+    # exhibidor; no debe multiplicarse dos veces.
+    unidad = str(producto.get("unidad") or "").strip().upper()
+    if unidad in {"EXH", "EXHIB", "EXHIBIDOR"}:
+        cantidad = _float_producto(producto, "cantidad")
+        if cantidad > 0:
+            return cantidad
+        piezas = _float_producto(producto, "piezas")
+        por_exhibidor = _piezas_por_exhibidor(producto)
+        return piezas / por_exhibidor if piezas > 0 and por_exhibidor > 0 else 1.0
     piezas = _float_producto(producto, "piezas")
     return piezas if piezas else _float_producto(producto, "cantidad")
 
@@ -2381,10 +2495,12 @@ def _modo_producto_cfdi(producto, modo_global=""):
     return str(modo_global or "PIEZAS").strip().upper() or "PIEZAS"
 
 
-def _cantidad_producto_cfdi(producto, modo_global=""):
+def _cantidad_producto_cfdi(producto, modo_global="", desglosar_exhibidor=False):
     modo_producto = _modo_producto_cfdi(producto, modo_global)
     cantidad_base = _cantidad_base_producto(producto, modo_producto)
-    if modo_producto == "PIEZAS":
+    # Sólo Gourmet España factura los exhibidores como piezas individuales.
+    # Para EZA2007, Ibersur y el resto se conserva una unidad por exhibidor.
+    if modo_producto == "PIEZAS" and desglosar_exhibidor:
         cantidad_base *= _piezas_por_exhibidor(producto)
     return cantidad_base, modo_producto
 
@@ -2414,6 +2530,12 @@ def _clave_prod_serv_sat(producto):
 def _producto_tiene_iva(producto):
     texto = str(producto.get("iva") or "").strip().lower()
     return texto in {"si", "sí", "s", "1", "true", "t", "yes", "y", "16", "16%", "gravado", "coniva"}
+
+
+def _producto_tiene_descuento(producto):
+    """Indicador legado de descuento aplicable por producto."""
+    texto = str(producto.get("descuento") or "").strip().lower()
+    return texto in {"si", "sí", "s", "1", "true", "t", "yes", "y", "sÃ­"}
 
 
 def _distribuir_iva_cfdi(factura, bases_gravadas):
@@ -2525,12 +2647,13 @@ def validar_pre_cfdi_factura(factura, config, resolucion=None, opciones_cfdi=Non
     requiere(str(opciones_cfdi.get("exportacion") or "01").strip(), "cfdi.exportacion", "Falta exportación SAT.")
 
     productos = factura.get("productos") or []
+    desglosar_exhibidor = _normalizar_empresa(factura.get("empresa")) == "GOURMET ESPANA"
     requiere(productos, "conceptos", "La factura no tiene productos.")
     productos_con_iva = 0
     suma_importes = Decimal("0.00")
     for idx, prod in enumerate(productos, start=1):
         pref = f"conceptos[{idx}]"
-        cantidad_fiscal = _cantidad_producto_cfdi(prod, "")[0]
+        cantidad_fiscal = _cantidad_producto_cfdi(prod, "", desglosar_exhibidor)[0]
         importe_linea = _money_cfdi(_importe_linea_producto(prod, cantidad_fiscal))
         suma_importes += importe_linea
         if _producto_tiene_iva(prod):
@@ -2849,10 +2972,11 @@ def _construir_payload_addenda(addenda, factura, resolucion=None, config_empresa
     cliente_receptor = resolucion.get("cliente_receptor") or {}
     receptor_fiscal = resolucion.get("receptor_fiscal") or {}
     modo = str(resolucion.get("modo_facturacion") or "").strip()
+    desglosar_exhibidor = _normalizar_empresa(factura.get("empresa")) == "GOURMET ESPANA"
     fecha_cfdi_ref = _fecha_referencia_cfdi(factura)
     lineas = []
     for idx, producto in enumerate(factura.get("productos") or [], start=1):
-        cantidad_modo, modo_producto = _cantidad_producto_cfdi(producto, modo)
+        cantidad_modo, modo_producto = _cantidad_producto_cfdi(producto, modo, desglosar_exhibidor)
         importe_linea = _importe_linea_producto(producto, cantidad_modo, modo_producto)
         unidad_txt = _unidad_cfdi_texto(producto.get("unidad"), modo_producto)
         lineas.append({
@@ -3252,24 +3376,36 @@ def renderizar_addenda_factura(conn, conn_legacy, factura):
     }
 
 
-def _obtener_siguiente_folio(conn, empresa):
+def _campo_folio_por_tipo(tipo_documento=None):
+    tipo = str(tipo_documento or "").strip().upper()
+    if tipo == "PAGO":
+        return "folio_complemento_pago"
+    if tipo == "NOTA_CREDITO":
+        return "folio_nota_credito"
+    return "folio_actual"
+
+
+def _obtener_siguiente_folio(conn, empresa, tipo_documento=None):
     empresa = _normalizar_empresa(empresa)
     config = obtener_config_timbrado(conn, empresa)
-    folio_actual = str(config.get("folio_actual") or "0").strip()
+    campo = _campo_folio_por_tipo(tipo_documento)
+    default = "1" if campo != "folio_actual" else "0"
+    folio_actual = str(config.get(campo) or default).strip()
     digitos = re.sub(r"[^0-9]", "", folio_actual)
     if not digitos:
         digitos = "1"
     return digitos
 
 
-def _avanzar_folio_empresa(conn, empresa, folio_emitido):
+def _avanzar_folio_empresa(conn, empresa, folio_emitido, tipo_documento=None):
     empresa = _normalizar_empresa(empresa)
     digitos = re.sub(r"[^0-9]", "", str(folio_emitido or ""))
     if not digitos:
         return
     nuevo_folio = str(int(digitos) + 1)
+    campo = _campo_folio_por_tipo(tipo_documento)
     conn.execute(
-        "UPDATE empresas_timbrado SET folio_actual = ? WHERE empresa = ?",
+        f"UPDATE empresas_timbrado SET {campo} = ? WHERE empresa = ?",
         (nuevo_folio, empresa),
     )
 
@@ -3392,8 +3528,9 @@ def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio
 
     xml_parts.append('  <cfdi:Conceptos>')
     conceptos = []
+    desglosar_exhibidor = _normalizar_empresa(factura.get("empresa")) == "GOURMET ESPANA"
     for prod in (factura.get("productos") or []):
-        cantidad_modo, modo_producto = _cantidad_producto_cfdi(prod, modo)
+        cantidad_modo, modo_producto = _cantidad_producto_cfdi(prod, modo, desglosar_exhibidor)
         importe_linea_dec = _money_cfdi(_importe_linea_producto(prod, cantidad_modo, modo_producto))
         tiene_iva = _producto_tiene_iva(prod)
         concepto = {
@@ -3402,6 +3539,8 @@ def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio
             "modo_producto": modo_producto,
             "importe": importe_linea_dec,
             "tiene_iva": tiene_iva,
+            "tiene_descuento": _money_cfdi(prod.get("descuento_pct")) > 0 or _producto_tiene_descuento(prod),
+            "descuento_historico": _money_cfdi(prod.get("descuento_importe")),
             "descuento": Decimal("0.00"),
             "base_impuesto": importe_linea_dec,
             "iva": Decimal("0.00"),
@@ -3412,10 +3551,28 @@ def _generar_cfdi_simulado_xml(factura, config, addenda_render, item, cfdi_folio
         diferencia_subtotal = subtotal_objetivo - sum((c["importe"] for c in conceptos), Decimal("0.00"))
         if abs(diferencia_subtotal) <= Decimal("0.05"):
             conceptos[-1]["importe"] = max(Decimal("0.00"), conceptos[-1]["importe"] + diferencia_subtotal)
-    descuentos = _distribuir_descuento_cfdi(descuento_total_cfdi, [c["importe"] for c in conceptos])
-    for concepto, descuento_linea in zip(conceptos, descuentos):
-        concepto["descuento"] = descuento_linea
-        concepto["base_impuesto"] = max(Decimal("0.00"), concepto["importe"] - descuento_linea)
+    # El descuento de cabecera corresponde únicamente a las partidas cuyo
+    # catálogo lo marca como descontable. Así pueden convivir partidas con
+    # descuento, sin descuento, gravadas y exentas en un solo CFDI.
+    hay_descuento_historico = any(c["descuento_historico"] > 0 for c in conceptos)
+    if hay_descuento_historico:
+        for concepto in conceptos:
+            concepto["descuento"] = min(concepto["importe"], concepto["descuento_historico"])
+        diferencia_descuento = descuento_total_cfdi - sum((c["descuento"] for c in conceptos), Decimal("0.00"))
+        if abs(diferencia_descuento) <= Decimal("0.05"):
+            candidatos = [c for c in conceptos if c["tiene_descuento"]]
+            if candidatos:
+                candidatos[-1]["descuento"] = max(Decimal("0.00"), candidatos[-1]["descuento"] + diferencia_descuento)
+    else:
+        indices_descuento = [idx for idx, concepto in enumerate(conceptos) if concepto["tiene_descuento"]]
+        descuentos = _distribuir_descuento_cfdi(
+            descuento_total_cfdi,
+            [conceptos[idx]["importe"] for idx in indices_descuento],
+        )
+        for idx, descuento_linea in zip(indices_descuento, descuentos):
+            conceptos[idx]["descuento"] = descuento_linea
+    for concepto in conceptos:
+        concepto["base_impuesto"] = max(Decimal("0.00"), concepto["importe"] - concepto["descuento"])
     gravadas_idx = [idx for idx, concepto in enumerate(conceptos) if concepto["tiene_iva"]]
     bases_gravadas = [conceptos[idx]["base_impuesto"] for idx in gravadas_idx]
     iva_por_gravado = _distribuir_iva_cfdi(factura, bases_gravadas)
@@ -3734,6 +3891,18 @@ def procesar_siguiente_timbrado(conn, conn_legacy, folio: str | None = None):
             xml_path = os.path.join(xml_dir, f"{factura.get('factura')}-{serie}{cfdi_folio}.xml")
             with open(xml_path, "w", encoding="utf-8") as f:
                 f.write(xml_timbrado)
+            if not os.path.isfile(xml_path) or os.path.getsize(xml_path) < 100:
+                raise RuntimeError(f"El PAC timbró el CFDI, pero no se pudo confirmar el XML en servidor: {xml_path}")
+            # La carpeta elegida en configuración puede pertenecer a otra
+            # instalación. Conservamos además una copia local administrada por
+            # esta API, para que correo, descargas y reimpresión no dependan de
+            # una ruta externa o de una limpieza accidental.
+            respaldo_dir = os.path.join(ruta_empresa_fiscal(item["empresa"]), anio, "xml")
+            respaldo_path = os.path.join(respaldo_dir, os.path.basename(xml_path))
+            if os.path.normcase(os.path.abspath(respaldo_path)) != os.path.normcase(os.path.abspath(xml_path)):
+                os.makedirs(respaldo_dir, exist_ok=True)
+                with open(respaldo_path, "w", encoding="utf-8") as f:
+                    f.write(xml_timbrado)
             snapshot_path = _guardar_snapshot_json(config, factura)
             conn.execute(
                 """
@@ -3906,14 +4075,26 @@ def consolidar_facturas_timbrado(conn, conn_legacy, facturas_list):
     items = [dict(r) for r in rows]
     empresa = items[0]["empresa"]
     cliente_num = items[0].get("cliente_receptor_numero") or items[0].get("numero_cliente")
-    consignatario = items[0].get("cliente_origen_nombre") or ""
+    # El nombre comercial puede variar entre documentos por espacios,
+    # mayúsculas o sufijos; la sucursal real se identifica por su número de
+    # cliente de origen.
+    consignatario_numero = str(items[0].get("cliente_origen_numero") or items[0].get("numero_cliente") or "").strip()
+    consignatario = " ".join(str(items[0].get("cliente_origen_nombre") or "").upper().split())
     for item in items:
         if item["empresa"] != empresa:
             return {"procesado": False, "detalle": "Todas las facturas deben ser de la misma empresa"}
         c = item.get("cliente_receptor_numero") or item.get("numero_cliente")
         if c != cliente_num:
             return {"procesado": False, "detalle": "Todas las facturas deben ser del mismo cliente"}
-        if (item.get("cliente_origen_nombre") or "") != consignatario:
+        item_consignatario_numero = str(item.get("cliente_origen_numero") or item.get("numero_cliente") or "").strip()
+        item_consignatario = " ".join(str(item.get("cliente_origen_nombre") or "").upper().split())
+        # Para registros actuales se compara el número de sucursal. El texto
+        # sólo es respaldo para registros históricos sin ese identificador.
+        if consignatario_numero and item_consignatario_numero:
+            mismo_consignatario = item_consignatario_numero == consignatario_numero
+        else:
+            mismo_consignatario = item_consignatario == consignatario
+        if not mismo_consignatario:
             return {"procesado": False, "detalle": "Todas las facturas deben tener el mismo consignatario"}
     facturas = [_snapshot_factura(conn_legacy, int(item["factura_id"])) for item in items]
     id_list = [item["id"] for item in items]

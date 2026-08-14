@@ -124,6 +124,40 @@ def _cfdi_rate(value) -> str:
         return "0.000000"
 
 
+def _to_int(value, default=0):
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if value.endswith(".0"):
+                value = value[:-2]
+        return int(value or 0)
+    except Exception:
+        return default
+
+
+def _cfdi_datetime(value, fallback: str | None = None, noon_for_date: bool = False) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    text = text.replace("Z", "")
+    candidates = [
+        ("%Y-%m-%dT%H:%M:%S", text[:19]),
+        ("%Y-%m-%d %H:%M:%S", text[:19]),
+        ("%Y-%m-%d", text[:10]),
+        ("%d/%m/%Y %H:%M:%S", text[:19]),
+        ("%d/%m/%Y", text[:10]),
+    ]
+    for fmt, candidate in candidates:
+        try:
+            dt = datetime.strptime(candidate, fmt)
+            if fmt in ("%Y-%m-%d", "%d/%m/%Y") and noon_for_date:
+                dt = dt.replace(hour=12)
+            return dt.strftime("%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            continue
+    return fallback or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def _asegurar_tabla_snapshots_timbrado(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS timbrado_config_snapshots (
@@ -146,6 +180,27 @@ def _asegurar_tabla_snapshots_timbrado(conn):
 
 def _config_publica_timbrado(cfg: dict | None) -> dict:
     data = dict(cfg or {})
+    rfc = str(data.get("rfc_emisor") or "").strip().upper()
+    nc_defaults = {
+        "nota_credito_no_identificacion": "NC006",
+        "nota_credito_clave_unidad": "ACT",
+        "nota_credito_unidad": "pz",
+        "nota_credito_descripcion": "DESCUENTO SOBRE VENTAS",
+        "nota_credito_metodo_pago_99": "PPD",
+    }
+    if rfc == "GES090312DJ1":
+        nc_defaults.update({
+            "nota_credito_no_identificacion": "NCD",
+            "nota_credito_clave_unidad": "H87",
+            "nota_credito_descripcion": "DESCUENTO SOBRE COMPRAS",
+        })
+    for campo, valor in nc_defaults.items():
+        if not str(data.get(campo) or "").strip():
+            data[campo] = valor
+    if not str(data.get("folio_complemento_pago") or "").strip():
+        data["folio_complemento_pago"] = "1"
+    if not str(data.get("folio_nota_credito") or "").strip():
+        data["folio_nota_credito"] = "1"
     for campo in ("csd_key_password", "pac_password", "pac_cancel_passphrase"):
         tiene = bool(str(data.get(campo) or "").strip())
         data[f"{campo}_configured"] = tiene
@@ -161,6 +216,13 @@ def _resolver_secretos_config(actual: dict | None, datos: dict | None) -> dict:
         val = str(merged.get(campo) or "")
         if val == SECRET_PLACEHOLDER:
             merged[campo] = actual.get(campo) or ""
+    # Un guardado parcial de la pantalla de configuración (por ejemplo, al
+    # ejecutar un diagnóstico PAC) no debe borrar las rutas de un CSD ya
+    # cargado. Los archivos se modifican exclusivamente por los endpoints de
+    # carga de CER/KEY; una ruta vacía aquí significa "conservar la actual".
+    for campo in ("csd_cer_path", "csd_key_path"):
+        if not str(merged.get(campo) or "").strip() and str(actual.get(campo) or "").strip():
+            merged[campo] = actual[campo]
     return merged
 
 
@@ -204,6 +266,7 @@ def _asegurar_tabla_cfdi_cobranza(conn):
             uuid VARCHAR(36) DEFAULT '',
             estatus_cfdi VARCHAR(20) NOT NULL DEFAULT 'TIMBRADA',
             xml_path TEXT,
+            pdf_path TEXT,
             acuse_recepcion_path TEXT,
             acuse_cancelacion_path TEXT,
             fecha_timbrado DATETIME NULL,
@@ -214,6 +277,18 @@ def _asegurar_tabla_cfdi_cobranza(conn):
             INDEX idx_cfdi_cobranza_empresa (empresa)
         )
     """)
+    try:
+        indices = conn.execute("SHOW INDEX FROM cfdi_cobranza_emitidos").fetchall()
+        nombres = {str(dict(row).get("Key_name") or "") for row in indices}
+        if "ux_cfdi_cobranza_folio" in nombres:
+            conn.execute("ALTER TABLE cfdi_cobranza_emitidos DROP INDEX ux_cfdi_cobranza_folio")
+        if "ux_cfdi_cobranza_empresa_tipo_serie_folio" not in nombres:
+            conn.execute(
+                "CREATE UNIQUE INDEX ux_cfdi_cobranza_empresa_tipo_serie_folio "
+                "ON cfdi_cobranza_emitidos (empresa, tipo_documento, serie, folio_cfdi)"
+            )
+    except Exception:
+        pass
     for idx_sql in [
         "CREATE INDEX IF NOT EXISTS idx_cfdi_cobranza_factura ON cfdi_cobranza_emitidos (factura)",
         "CREATE INDEX IF NOT EXISTS idx_cfdi_cobranza_empresa_fecha ON cfdi_cobranza_emitidos (empresa, fecha_timbrado)",
@@ -225,6 +300,8 @@ def _asegurar_tabla_cfdi_cobranza(conn):
     try:
         rows = conn.execute("SHOW COLUMNS FROM cfdi_cobranza_emitidos").fetchall()
         columnas = {str(dict(row).get("Field") or "").lower() for row in rows}
+        if "pdf_path" not in columnas:
+            conn.execute("ALTER TABLE cfdi_cobranza_emitidos ADD COLUMN pdf_path TEXT NULL")
         if "acuse_recepcion_path" not in columnas:
             conn.execute("ALTER TABLE cfdi_cobranza_emitidos ADD COLUMN acuse_recepcion_path TEXT NULL")
         if "acuse_cancelacion_path" not in columnas:
@@ -233,12 +310,275 @@ def _asegurar_tabla_cfdi_cobranza(conn):
         try:
             rows = conn.execute("PRAGMA table_info(cfdi_cobranza_emitidos)").fetchall()
             columnas = {str(dict(row).get("name") or "").lower() for row in rows}
+            if "pdf_path" not in columnas:
+                conn.execute("ALTER TABLE cfdi_cobranza_emitidos ADD COLUMN pdf_path TEXT")
             if "acuse_recepcion_path" not in columnas:
                 conn.execute("ALTER TABLE cfdi_cobranza_emitidos ADD COLUMN acuse_recepcion_path TEXT")
             if "acuse_cancelacion_path" not in columnas:
                 conn.execute("ALTER TABLE cfdi_cobranza_emitidos ADD COLUMN acuse_cancelacion_path TEXT")
         except Exception:
             pass
+
+
+def _normalizar_xml_nombre_timbrado(nombre: str) -> str:
+    nombre = str(nombre or "").replace("\\", "/").strip()
+    if not nombre:
+        return ""
+    return os.path.basename(nombre)
+
+
+def _leer_zip_xmls_timbrado(xml_zip: UploadFile | None) -> dict[str, bytes]:
+    if not xml_zip:
+        return {}
+    contenido = xml_zip.file.read() if xml_zip.file else b""
+    if not contenido:
+        return {}
+    xmls: dict[str, bytes] = {}
+    try:
+        with zipfile.ZipFile(io.BytesIO(contenido)) as zf:
+            for info in zf.infolist():
+                if info.is_dir() or not info.filename.lower().endswith(".xml"):
+                    continue
+                nombre = _normalizar_xml_nombre_timbrado(info.filename)
+                if nombre:
+                    xmls[nombre.lower()] = zf.read(info)
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="El archivo ZIP de XML no es válido.")
+    return xmls
+
+
+def _xml_attr(node, attr: str, default: str = "") -> str:
+    if node is None:
+        return default
+    return str(node.attrib.get(attr) or default).strip()
+
+
+def _parsear_cfdi_cobranza_importado(xml_bytes: bytes) -> dict:
+    try:
+        root = ET.fromstring(xml_bytes)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"XML inválido: {exc}")
+    ns = {
+        "cfdi": "http://www.sat.gob.mx/cfd/4",
+        "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital",
+        "pago20": "http://www.sat.gob.mx/Pagos20",
+    }
+    receptor = root.find("cfdi:Receptor", ns)
+    tfd = root.find(".//tfd:TimbreFiscalDigital", ns)
+    tipo_cfdi = str(root.attrib.get("TipoDeComprobante") or "").upper()
+    tipo_documento = "PAGO" if tipo_cfdi == "P" else "NOTA_CREDITO" if tipo_cfdi == "E" else tipo_cfdi
+    forma_pago = str(root.attrib.get("FormaPago") or "").strip()
+    fecha_pago = ""
+    doctos = []
+    if tipo_documento == "PAGO":
+        pago = root.find(".//pago20:Pago", ns)
+        forma_pago = _xml_attr(pago, "FormaDePagoP", forma_pago)
+        fecha_pago = _xml_attr(pago, "FechaPago")
+        for docto in root.findall(".//pago20:DoctoRelacionado", ns):
+            serie = _xml_attr(docto, "Serie")
+            folio = _xml_attr(docto, "Folio")
+            doctos.append({
+                "serie": serie,
+                "folio": folio,
+                "factura": f"{serie}{folio}".strip() or _xml_attr(docto, "IdDocumento"),
+                "uuid": _xml_attr(docto, "IdDocumento"),
+                "pagado": _money(_xml_attr(docto, "ImpPagado") or 0),
+                "saldo_anterior": _money(_xml_attr(docto, "ImpSaldoAnt") or 0),
+                "saldo": _money(_xml_attr(docto, "ImpSaldoInsoluto") or 0),
+            })
+    elif tipo_documento == "NOTA_CREDITO":
+        for rel in root.findall(".//cfdi:CfdiRelacionado", ns):
+            doctos.append({"uuid": _xml_attr(rel, "UUID"), "factura": _xml_attr(rel, "UUID")})
+    return {
+        "tipo_documento": tipo_documento,
+        "tipo_cfdi": tipo_cfdi,
+        "serie": str(root.attrib.get("Serie") or "").strip(),
+        "folio": str(root.attrib.get("Folio") or "").strip(),
+        "uuid": _xml_attr(tfd, "UUID").upper(),
+        "fecha": str(root.attrib.get("Fecha") or "").strip(),
+        "fecha_timbrado": _xml_attr(tfd, "FechaTimbrado") or str(root.attrib.get("Fecha") or "").strip(),
+        "total": _money(root.attrib.get("Total") or 0),
+        "forma_pago": forma_pago,
+        "fecha_pago": fecha_pago,
+        "rfc_receptor": _xml_attr(receptor, "Rfc"),
+        "cliente_receptor_nombre": _xml_attr(receptor, "Nombre"),
+        "doctos": doctos,
+    }
+
+
+def _guardar_xml_cobranza_externo(empresa: str, tipo: str, serie: str, folio: str, nombre: str, xml_bytes: bytes) -> str:
+    safe_empresa = re.sub(r"[^A-Za-z0-9_.-]+", "_", _normalizar_empresa(empresa) or "empresa").strip("._") or "empresa"
+    safe_tipo = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(tipo or "CFDI")).strip("._") or "CFDI"
+    destino_dir = settings.storage_dir / "cfdi" / safe_empresa / "externos" / safe_tipo
+    destino_dir.mkdir(parents=True, exist_ok=True)
+    nombre_base = _normalizar_xml_nombre_timbrado(nombre) or f"{serie}{folio}.xml" or "cfdi.xml"
+    destino = destino_dir / nombre_base
+    if destino.exists():
+        stem = destino.stem
+        suffix = destino.suffix or ".xml"
+        destino = destino_dir / f"{stem}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}{suffix}"
+    destino.write_bytes(xml_bytes)
+    return str(destino)
+
+
+def _buscar_xml_importado(row: dict, xmls_zip: dict[str, bytes], xmls_por_uuid: dict[str, tuple[str, bytes]]) -> tuple[str, bytes] | None:
+    xml_nombre = _normalizar_xml_nombre_timbrado(row.get("xml") or row.get("xml_nombre") or row.get("archivo_xml") or row.get("nombre_xml") or "")
+    if xml_nombre and xml_nombre.lower() in xmls_zip:
+        return xml_nombre, xmls_zip[xml_nombre.lower()]
+    uuid_solicitado = str(row.get("uuid") or row.get("uuid_cfdi") or "").strip().upper()
+    if uuid_solicitado and uuid_solicitado in xmls_por_uuid:
+        return xmls_por_uuid[uuid_solicitado]
+    serie = str(row.get("serie") or "").strip().upper()
+    folio = str(row.get("folio") or row.get("folio_cfdi") or "").strip().upper()
+    factura = str(row.get("factura") or row.get("documento") or "").strip().upper()
+    candidatos = [x for x in (f"{serie}{folio}", folio, factura) if x]
+    for nombre, contenido in xmls_zip.items():
+        base = os.path.splitext(nombre)[0].upper()
+        if any(c in base or base in c for c in candidatos):
+            return nombre, contenido
+    return None
+
+
+@router.post("/cobranza/importar-cfdi-externos")
+async def importar_cfdi_cobranza_externos(
+    payload: str = Form(...),
+    xml_zip: UploadFile | None = File(default=None),
+):
+    try:
+        datos = json.loads(payload or "{}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Payload de importación inválido.")
+    rows = datos.get("rows") or []
+    empresa_default = str(datos.get("empresa") or "").strip()
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(status_code=400, detail="No se recibieron filas para importar.")
+    xmls_zip = _leer_zip_xmls_timbrado(xml_zip)
+    xmls_por_uuid = {}
+    for nombre, contenido in xmls_zip.items():
+        try:
+            info = _parsear_cfdi_cobranza_importado(contenido)
+            if info.get("uuid"):
+                xmls_por_uuid[info["uuid"]] = (nombre, contenido)
+        except Exception:
+            continue
+    importados = omitidos = duplicados = vinculados = 0
+    faltantes = []
+    detalles = []
+    with get_timbrado_connection() as conn:
+        _asegurar_tablas_timbrado(conn)
+        _asegurar_tabla_cfdi_cobranza(conn)
+        legacy = getattr(conn, "_conn", None)
+        cur = legacy.cursor(dictionary=True) if legacy else None
+        min_externo = conn.execute("SELECT COALESCE(MIN(recibo_id), 0) AS min_id FROM cfdi_cobranza_emitidos WHERE recibo_id < 0").fetchone()
+        siguiente_recibo_externo = int(dict(min_externo or {}).get("min_id") or 0)
+        if siguiente_recibo_externo >= 0:
+            siguiente_recibo_externo = -1
+        try:
+            for row in rows:
+                if not isinstance(row, dict):
+                    omitidos += 1
+                    continue
+                encontrado = _buscar_xml_importado(row, xmls_zip, xmls_por_uuid)
+                if not encontrado:
+                    ref = row.get("xml_nombre") or row.get("uuid") or row.get("factura") or row.get("folio") or "fila sin referencia"
+                    faltantes.append(str(ref))
+                    omitidos += 1
+                    continue
+                xml_nombre, xml_bytes = encontrado
+                info = _parsear_cfdi_cobranza_importado(xml_bytes)
+                tipo = str(row.get("tipo") or info.get("tipo_documento") or "").strip().upper()
+                if tipo in ("REP", "COMPLEMENTO", "COMPLEMENTO_PAGO"):
+                    tipo = "PAGO"
+                if tipo in ("NC", "NOTA", "EGRESO"):
+                    tipo = "NOTA_CREDITO"
+                if tipo not in ("PAGO", "NOTA_CREDITO"):
+                    omitidos += 1
+                    detalles.append({"xml": xml_nombre, "error": "Tipo de CFDI no soportado"})
+                    continue
+                empresa = _normalizar_empresa(row.get("empresa") or empresa_default)
+                if not empresa and cur:
+                    rfc_emisor = ""
+                    try:
+                        root = ET.fromstring(xml_bytes)
+                        emisor = root.find("{http://www.sat.gob.mx/cfd/4}Emisor")
+                        rfc_emisor = _xml_attr(emisor, "Rfc")
+                    except Exception:
+                        pass
+                    if rfc_emisor:
+                        erow = conn.execute("SELECT empresa FROM empresas_timbrado WHERE UPPER(rfc_emisor)=UPPER(?) LIMIT 1", (rfc_emisor,)).fetchone()
+                        empresa = _normalizar_empresa(dict(erow).get("empresa") if erow else "")
+                if not empresa:
+                    omitidos += 1
+                    detalles.append({"xml": xml_nombre, "error": "Empresa no encontrada"})
+                    continue
+                serie = str(row.get("serie") or info.get("serie") or "").strip()
+                folio = str(row.get("folio") or row.get("folio_cfdi") or info.get("folio") or "").strip()
+                uuid_cfdi = str(row.get("uuid") or info.get("uuid") or "").strip().upper()
+                if not folio and not uuid_cfdi:
+                    omitidos += 1
+                    detalles.append({"xml": xml_nombre, "error": "Sin folio ni UUID"})
+                    continue
+                existente = None
+                if uuid_cfdi:
+                    existente = conn.execute("SELECT id FROM cfdi_cobranza_emitidos WHERE uuid = ? LIMIT 1", (uuid_cfdi,)).fetchone()
+                if not existente and folio:
+                    existente = conn.execute(
+                        "SELECT id FROM cfdi_cobranza_emitidos WHERE empresa = ? AND tipo_documento = ? AND serie = ? AND folio_cfdi = ? LIMIT 1",
+                        (empresa, tipo, serie, folio),
+                    ).fetchone()
+                if existente:
+                    duplicados += 1
+                    continue
+                recibo_id = _to_int(row.get("recibo_id") or 0)
+                if not recibo_id and cur:
+                    folio_recibo = str(row.get("recibo") or row.get("folio_recibo") or row.get("recibo_folio") or "").strip()
+                    if folio_recibo:
+                        cur.execute("SELECT id FROM cobranza_recibos WHERE folio = %s LIMIT 1", (folio_recibo,))
+                        recibo = cur.fetchone()
+                        recibo_id = int((recibo or {}).get("id") or 0)
+                if recibo_id:
+                    vinculado = conn.execute("SELECT id FROM cfdi_cobranza_emitidos WHERE recibo_id = ? AND tipo_documento = ? LIMIT 1", (recibo_id, tipo)).fetchone()
+                    if vinculado:
+                        duplicados += 1
+                        continue
+                    vinculados += 1
+                else:
+                    recibo_id = siguiente_recibo_externo
+                    siguiente_recibo_externo -= 1
+                factura_ref = str(row.get("factura") or row.get("documento") or "").strip()
+                if not factura_ref:
+                    doctos = info.get("doctos") or []
+                    factura_ref = ", ".join([str(d.get("factura") or d.get("uuid") or "").strip() for d in doctos if d.get("factura") or d.get("uuid")])[:80]
+                if not factura_ref:
+                    factura_ref = f"{serie}{folio}".strip() or uuid_cfdi
+                cliente_numero = str(row.get("cliente") or row.get("cliente_numero") or row.get("numero_cliente") or "").strip()
+                cliente_nombre = str(row.get("cliente_nombre") or row.get("nombre_cliente") or info.get("cliente_receptor_nombre") or "").strip()
+                xml_path = _guardar_xml_cobranza_externo(empresa, tipo, serie, folio, xml_nombre, xml_bytes)
+                fecha_timbrado = str(info.get("fecha_timbrado") or info.get("fecha") or "").replace("T", " ")[:19] or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                conn.execute("""
+                    INSERT INTO cfdi_cobranza_emitidos
+                    (recibo_id, tipo_documento, factura, empresa, cliente_receptor_numero, cliente_receptor_nombre,
+                     serie, folio_cfdi, uuid, estatus_cfdi, xml_path, fecha_timbrado, forma_pago)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'TIMBRADA', ?, ?, ?)
+                """, (
+                    recibo_id, tipo, factura_ref, empresa, cliente_numero, cliente_nombre,
+                    serie, folio, uuid_cfdi, xml_path, fecha_timbrado, str(info.get("forma_pago") or "").zfill(2)[:5],
+                ))
+                importados += 1
+                detalles.append({"xml": xml_nombre, "empresa": empresa, "tipo": tipo, "serie": serie, "folio": folio, "uuid": uuid_cfdi, "recibo_id": recibo_id})
+        finally:
+            if cur:
+                cur.close()
+    return {
+        "ok": True,
+        "mensaje": "CFDI de cobranza importados.",
+        "importados": importados,
+        "omitidos": omitidos,
+        "duplicados": duplicados,
+        "vinculados": vinculados,
+        "xmls_faltantes": sorted(set(faltantes))[:50],
+        "detalles": detalles[:100],
+    }
 
 
 def _datos_receptor_desde_xml(xml_path: str, fallback: dict) -> dict:
@@ -253,16 +593,26 @@ def _datos_receptor_desde_xml(xml_path: str, fallback: dict) -> dict:
                 datos = dict(receptor.attrib)
         except Exception:
             pass
+    # ``desde_xml`` es importante para los complementos de pago: el SAT exige
+    # que el receptor sea exactamente el que aparece en el CFDI relacionado.
+    # Los datos comerciales del cliente sirven para una factura interna, pero
+    # nunca deben sustituir al receptor de un CFDI ya timbrado.
     return {
         "rfc": datos.get("Rfc") or fallback.get("rfc") or "",
         "nombre": datos.get("Nombre") or fallback.get("cliente_receptor_nombre") or "",
         "cp": datos.get("DomicilioFiscalReceptor") or fallback.get("domicilio_fiscal") or "",
         "regimen": datos.get("RegimenFiscalReceptor") or fallback.get("regimen_fiscal") or "601",
+        "desde_xml": bool(datos),
     }
 
 
 def _resolver_xml_cfdi_path(xml_path: str) -> str:
-    """Resuelve rutas de XML guardadas en otra copia/disco del proyecto."""
+    """Resuelve XML guardados por otra instalación del sistema.
+
+    La tabla de CFDI es compartida por las instancias 8010/8011, por lo que
+    puede conservar una ruta absoluta de una carpeta de proyecto anterior.
+    Los XML vigentes pertenecen al DATA_DIR persistente, nunca al ejecutable.
+    """
     path = str(xml_path or "").strip()
     if not path:
         return ""
@@ -273,9 +623,15 @@ def _resolver_xml_cfdi_path(xml_path: str) -> str:
     idx = normalizado.lower().find(marcador.lower())
     if idx >= 0:
         relativo = normalizado[idx + 1:]
-        candidato = Path(__file__).resolve().parents[2] / relativo
-        if candidato.exists():
-            return str(candidato)
+        # Primero el directorio persistente configurado (ProgramData en el
+        # servicio instalado); después la raíz de desarrollo como respaldo.
+        candidatos = [
+            settings.storage_dir.parent / relativo,
+            Path(__file__).resolve().parents[2] / relativo,
+        ]
+        for candidato in candidatos:
+            if candidato.is_file():
+                return str(candidato)
     return path
 
 
@@ -457,19 +813,58 @@ def _xml_comprobante_cobranza(tipo: str, recibo: dict, aplicaciones: list[dict],
     if not facturas:
         raise HTTPException(status_code=400, detail="El movimiento no tiene facturas fiscales relacionadas.")
     receptor = _datos_receptor_desde_xml(str(facturas[0].get("xml_path") or ""), facturas[0])
+    if not interno and not receptor.get("desde_xml"):
+        factura_origen = str(facturas[0].get("folio_cfdi") or facturas[0].get("factura") or "la factura relacionada").strip()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No se encontró el XML fiscal de {factura_origen}. No se generó el complemento "
+                "para evitar usar el CP o régimen comercial en lugar de los datos fiscales originales."
+            ),
+        )
     if not receptor["rfc"] or not receptor["cp"]:
         if not interno:
             raise HTTPException(status_code=400, detail="No se pudieron obtener los datos fiscales del receptor desde la factura relacionada.")
         receptor["rfc"] = receptor["rfc"] or "XAXX010101000"
         receptor["cp"] = receptor["cp"] or "00000"
         receptor["regimen"] = receptor["regimen"] or "601"
-    fecha = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    fecha_emision = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    fecha_pago = _cfdi_datetime(
+        recibo.get("fecha_pago") or recibo.get("fecha_recibo") or recibo.get("fecha_movimiento"),
+        fecha_emision,
+        noon_for_date=True,
+    )
     lugar = str(config.get("cp_fiscal") or config.get("lugar_expedicion") or "").strip()
     if not lugar:
         raise HTTPException(status_code=400, detail="La empresa no tiene código postal fiscal configurado.")
     emisor_rfc = str(config.get("rfc_emisor") or "").strip()
     if not emisor_rfc:
         raise HTTPException(status_code=400, detail="La empresa no tiene RFC emisor configurado.")
+    nota_metodo_pago_99 = str(config.get("nota_credito_metodo_pago_99") or "PPD").strip().upper() or "PPD"
+    if nota_metodo_pago_99 not in ("PUE", "PPD"):
+        nota_metodo_pago_99 = "PPD"
+    nota_metodo_pago = nota_metodo_pago_99 if tipo == "NOTA_CREDITO" and str(forma_pago).zfill(2) == "99" else "PUE"
+    nota_concepto = {
+        "no_identificacion": "NC006",
+        "clave_unidad": "ACT",
+        "unidad": "pz",
+        "descripcion": "DESCUENTO SOBRE VENTAS",
+    }
+    if tipo == "NOTA_CREDITO" and emisor_rfc.upper() == "GES090312DJ1":
+        nota_concepto.update({
+            "no_identificacion": "NCD",
+            "clave_unidad": "H87",
+            "descripcion": "DESCUENTO SOBRE COMPRAS",
+        })
+    nota_concepto["no_identificacion"] = str(config.get("nota_credito_no_identificacion") or nota_concepto["no_identificacion"]).strip() or nota_concepto["no_identificacion"]
+    nota_concepto["clave_unidad"] = str(config.get("nota_credito_clave_unidad") or nota_concepto["clave_unidad"]).strip() or nota_concepto["clave_unidad"]
+    nota_concepto["unidad"] = str(config.get("nota_credito_unidad") or nota_concepto["unidad"]).strip() or nota_concepto["unidad"]
+    nota_concepto["descripcion"] = str(config.get("nota_credito_descripcion") or nota_concepto["descripcion"]).strip() or nota_concepto["descripcion"]
+    if tipo == "NOTA_CREDITO":
+        nota_concepto["no_identificacion"] = str(recibo.get("nota_credito_no_identificacion") or nota_concepto["no_identificacion"]).strip() or nota_concepto["no_identificacion"]
+        nota_concepto["clave_unidad"] = str(recibo.get("nota_credito_clave_unidad") or nota_concepto["clave_unidad"]).strip() or nota_concepto["clave_unidad"]
+        nota_concepto["unidad"] = str(recibo.get("nota_credito_unidad") or nota_concepto["unidad"]).strip() or nota_concepto["unidad"]
+        nota_concepto["descripcion"] = str(recibo.get("nota_credito_descripcion") or nota_concepto["descripcion"]).strip() or nota_concepto["descripcion"]
     csd_material = obtener_material_csd(config) if str(config.get("csd_cer_path") or "").strip() else {}
     no_certificado = csd_material.get("no_certificado") or "00000000000000000000"
     certificado = csd_material.get("certificado") or ""
@@ -500,8 +895,8 @@ def _xml_comprobante_cobranza(tipo: str, recibo: dict, aplicaciones: list[dict],
         + (' xmlns:pago20="http://www.sat.gob.mx/Pagos20"' if tipo == "PAGO" else "")
         + ' xsi:schemaLocation="http://www.sat.gob.mx/cfd/4 http://www.sat.gob.mx/sitio_internet/cfd/4/cfdv40.xsd'
         + (' http://www.sat.gob.mx/Pagos20 http://www.sat.gob.mx/sitio_internet/cfd/Pagos/Pagos20.xsd' if tipo == "PAGO" else "")
-        + f'" Version="4.0" Serie="{e(serie)}" Folio="{e(folio)}" Fecha="{fecha}" NoCertificado="{e(no_certificado)}" Certificado="{e(certificado)}"'
-        + (f' SubTotal="0" Moneda="XXX" Total="0" TipoDeComprobante="P" Exportacion="01" LugarExpedicion="{e(lugar)}">' if tipo == "PAGO" else f' FormaPago="{e(forma_pago)}" SubTotal="{_cfdi_amount(nota_subtotal)}" Moneda="MXN" Total="{_cfdi_amount(recibo["monto_total"])}" TipoDeComprobante="E" Exportacion="01" MetodoPago="PUE" LugarExpedicion="{e(lugar)}">')
+        + f'" Version="4.0" Serie="{e(serie)}" Folio="{e(folio)}" Fecha="{fecha_emision}" NoCertificado="{e(no_certificado)}" Certificado="{e(certificado)}"'
+        + (f' SubTotal="0" Moneda="XXX" Total="0" TipoDeComprobante="P" Exportacion="01" LugarExpedicion="{e(lugar)}">' if tipo == "PAGO" else f' FormaPago="{e(forma_pago)}" SubTotal="{_cfdi_amount(nota_subtotal)}" Moneda="MXN" Total="{_cfdi_amount(recibo["monto_total"])}" TipoDeComprobante="E" Exportacion="01" MetodoPago="{e(nota_metodo_pago)}" LugarExpedicion="{e(lugar)}">')
     ]
     if tipo == "NOTA_CREDITO":
         base.append('  <cfdi:CfdiRelacionados TipoRelacion="01">')
@@ -516,7 +911,7 @@ def _xml_comprobante_cobranza(tipo: str, recibo: dict, aplicaciones: list[dict],
         if nota_traslados:
             base += [
                 '  <cfdi:Conceptos>',
-                f'    <cfdi:Concepto ClaveProdServ="84111506" Cantidad="1" ClaveUnidad="ACT" Descripcion="Descuento o bonificación" ValorUnitario="{_cfdi_amount(nota_subtotal)}" Importe="{_cfdi_amount(nota_subtotal)}" ObjetoImp="{objeto_imp}">',
+                f'    <cfdi:Concepto ClaveProdServ="84111506" NoIdentificacion="{e(nota_concepto["no_identificacion"])}" Cantidad="1" ClaveUnidad="{e(nota_concepto["clave_unidad"])}" Unidad="{e(nota_concepto["unidad"])}" Descripcion="{e(nota_concepto["descripcion"])}" ValorUnitario="{_cfdi_amount(nota_subtotal)}" Importe="{_cfdi_amount(nota_subtotal)}" ObjetoImp="{objeto_imp}">',
                 '      <cfdi:Impuestos><cfdi:Traslados>',
             ]
             for traslado in nota_traslados:
@@ -531,11 +926,13 @@ def _xml_comprobante_cobranza(tipo: str, recibo: dict, aplicaciones: list[dict],
                 )
             base.append('  </cfdi:Traslados></cfdi:Impuestos>')
         else:
-            base += ['  <cfdi:Conceptos>', f'    <cfdi:Concepto ClaveProdServ="84111506" Cantidad="1" ClaveUnidad="ACT" Descripcion="Descuento o bonificación" ValorUnitario="{_cfdi_amount(recibo["monto_total"])}" Importe="{_cfdi_amount(recibo["monto_total"])}" ObjetoImp="{objeto_imp}"/>', '  </cfdi:Conceptos>']
+            base += ['  <cfdi:Conceptos>', f'    <cfdi:Concepto ClaveProdServ="84111506" NoIdentificacion="{e(nota_concepto["no_identificacion"])}" Cantidad="1" ClaveUnidad="{e(nota_concepto["clave_unidad"])}" Unidad="{e(nota_concepto["unidad"])}" Descripcion="{e(nota_concepto["descripcion"])}" ValorUnitario="{_cfdi_amount(recibo["monto_total"])}" Importe="{_cfdi_amount(recibo["monto_total"])}" ObjetoImp="{objeto_imp}"/>', '  </cfdi:Conceptos>']
     else:
         rep_items = []
         total_base_iva16 = Decimal("0.00")
         total_impuesto_iva16 = Decimal("0.00")
+        total_base_iva0 = Decimal("0.00")
+        total_impuesto_iva0 = Decimal("0.00")
         for app, factura in zip(aplicaciones, facturas):
             datos_rep = _extraer_datos_rep_factura(str(factura.get("xml_path") or ""), _money(app.get("monto_aplicado", 0)))
             traslados = datos_rep.get("traslados") or []
@@ -543,21 +940,33 @@ def _xml_comprobante_cobranza(tipo: str, recibo: dict, aplicaciones: list[dict],
                 if traslado.get("impuesto") == "002" and traslado.get("tipo_factor") == "Tasa" and str(traslado.get("tasa") or "") == "0.160000":
                     total_base_iva16 = _money(total_base_iva16 + _money(traslado.get("base")))
                     total_impuesto_iva16 = _money(total_impuesto_iva16 + _money(traslado.get("importe")))
+                elif traslado.get("impuesto") == "002" and traslado.get("tipo_factor") == "Tasa" and str(traslado.get("tasa") or "") == "0.000000":
+                    total_base_iva0 = _money(total_base_iva0 + _money(traslado.get("base")))
+                    total_impuesto_iva0 = _money(total_impuesto_iva0 + _money(traslado.get("importe")))
             rep_items.append((app, factura, datos_rep, traslados))
         totales_attrs = f'MontoTotalPagos="{_cfdi_amount(recibo["monto_total"])}"'
+        if total_base_iva0 > 0:
+            totales_attrs = f'TotalTrasladosBaseIVA0="{_cfdi_amount(total_base_iva0)}" TotalTrasladosImpuestoIVA0="{_cfdi_amount(total_impuesto_iva0)}" {totales_attrs}'
         if total_base_iva16 > 0:
             totales_attrs = f'TotalTrasladosBaseIVA16="{_cfdi_amount(total_base_iva16)}" TotalTrasladosImpuestoIVA16="{_cfdi_amount(total_impuesto_iva16)}" {totales_attrs}'
         cuentas_bancarias = cuentas_bancarias or {}
         ordenante = cuentas_bancarias.get("ordenante") or {}
         beneficiario = cuentas_bancarias.get("beneficiario") or {}
         pago_attrs = [
-            f'FechaPago="{fecha}"',
+            f'FechaPago="{fecha_pago}"',
             f'FormaDePagoP="{e(forma_pago)}"',
             'MonedaP="MXN"',
             'TipoCambioP="1"',
             f'Monto="{_cfdi_amount(recibo["monto_total"])}"',
         ]
         referencia = str(recibo.get("referencia") or "").strip()
+        if not referencia and facturas:
+            factura_ref = facturas[0] or {}
+            serie_ref = str(factura_ref.get("serie_cfdi") or factura_ref.get("serie") or "").strip()
+            folio_ref = str(factura_ref.get("folio_cfdi") or factura_ref.get("folio") or factura_ref.get("factura") or "").strip()
+            if serie_ref and folio_ref.isdigit():
+                folio_ref = folio_ref.zfill(10)
+            referencia = f"{serie_ref}{folio_ref}".strip()
         if referencia:
             pago_attrs.append(f'NumOperacion="{e(referencia[:100])}"')
         if ordenante.get("rfc_banco") and ordenante.get("cuenta"):
@@ -599,9 +1008,12 @@ def _xml_comprobante_cobranza(tipo: str, recibo: dict, aplicaciones: list[dict],
                 )
             base.append('        </pago20:TrasladosDR></pago20:ImpuestosDR>')
             base.append('      </pago20:DoctoRelacionado>')
-        if total_base_iva16 > 0:
+        if total_base_iva16 > 0 or total_base_iva0 > 0:
             base.append('      <pago20:ImpuestosP><pago20:TrasladosP>')
-            base.append(f'        <pago20:TrasladoP BaseP="{_cfdi_amount(total_base_iva16)}" ImpuestoP="002" TipoFactorP="Tasa" TasaOCuotaP="0.160000" ImporteP="{_cfdi_amount(total_impuesto_iva16)}"/>')
+            if total_base_iva16 > 0:
+                base.append(f'        <pago20:TrasladoP BaseP="{_cfdi_amount(total_base_iva16)}" ImpuestoP="002" TipoFactorP="Tasa" TasaOCuotaP="0.160000" ImporteP="{_cfdi_amount(total_impuesto_iva16)}"/>')
+            if total_base_iva0 > 0:
+                base.append(f'        <pago20:TrasladoP BaseP="{_cfdi_amount(total_base_iva0)}" ImpuestoP="002" TipoFactorP="Tasa" TasaOCuotaP="0.000000" ImporteP="{_cfdi_amount(total_impuesto_iva0)}"/>')
             base.append('      </pago20:TrasladosP></pago20:ImpuestosP>')
         base += ['    </pago20:Pago></pago20:Pagos>', '  </cfdi:Complemento>']
     base.append('</cfdi:Comprobante>')
@@ -696,6 +1108,12 @@ def _validar_pre_cfdi_cobranza(conn, cur, recibo: dict, aplicaciones: list[dict]
             falta(f"aplicaciones[{idx}].uuid", f"La factura {app.get('factura') or factura_id} debe estar timbrada antes de emitir {tipo.replace('_', ' ').lower()}.")
             continue
         receptor = _datos_receptor_desde_xml(str(fiscal.get("xml_path") or ""), fiscal)
+        if tipo == "PAGO" and not interno and not receptor.get("desde_xml"):
+            falta(
+                f"aplicaciones[{idx}].xml",
+                f"No se encontró el XML fiscal de {app.get('factura') or factura_id}; no se usará el CP o régimen comercial para el complemento.",
+            )
+            continue
         if not receptor.get("rfc") and not interno:
             falta(f"aplicaciones[{idx}].receptor.rfc", f"No se pudo leer RFC receptor de la factura {app.get('factura') or factura_id}.")
         if not receptor.get("cp") and not interno:
@@ -942,6 +1360,7 @@ def health_timbrado():
 def listar_empresas_timbrado():
     empresas = {}
     with get_timbrado_connection() as conn:
+        _asegurar_tablas_timbrado(conn)
         try:
             rows = conn.execute("SELECT * FROM empresas_timbrado ORDER BY empresa").fetchall()
         except Exception:
@@ -975,6 +1394,7 @@ def listar_empresas_timbrado():
 @router.get("/empresas/{empresa}")
 def ver_empresa_timbrado(empresa: str):
     with get_timbrado_connection() as conn:
+        _asegurar_tablas_timbrado(conn)
         cfg = obtener_config_timbrado(conn, empresa)
     return _config_publica_timbrado(cfg or {"empresa": _normalizar_empresa(empresa), "timbrado_activo": 0, "modo_pruebas": 1, "proveedor": ""})
 
@@ -3449,7 +3869,7 @@ def validar_cfdi_cobranza(recibo_id: int, datos: dict | None = None):
         tipo = "PAGO" if tipo_recibo == "PAGO" else "NOTA_CREDITO" if tipo_recibo == "NOTA_CREDITO" else tipo_recibo
         cur.execute("SELECT * FROM cobranza_aplicaciones WHERE recibo_id = %s AND UPPER(origen_tipo) IN ('FACTURA', 'SALDO_INICIAL') ORDER BY id", (recibo_id,))
         aplicaciones = cur.fetchall() or []
-        forma_default = "03" if tipo == "PAGO" else "99"
+        forma_default = "03" if tipo == "PAGO" else "15"
         forma_pago = str(datos.get("forma_pago") or recibo.get("forma_pago") or forma_default).strip().zfill(2)
         with get_timbrado_connection() as conn:
             _asegurar_tablas_timbrado(conn)
@@ -3487,7 +3907,7 @@ def generar_prexml_cobranza(recibo_id: int, datos: dict | None = None):
         tipo = "PAGO" if tipo_recibo == "PAGO" else "NOTA_CREDITO" if tipo_recibo == "NOTA_CREDITO" else tipo_recibo
         cur.execute("SELECT * FROM cobranza_aplicaciones WHERE recibo_id = %s AND UPPER(origen_tipo) IN ('FACTURA', 'SALDO_INICIAL') ORDER BY id", (recibo_id,))
         aplicaciones = cur.fetchall() or []
-        forma_default = "03" if tipo == "PAGO" else "99"
+        forma_default = "03" if tipo == "PAGO" else "15"
         forma_pago = str(datos.get("forma_pago") or recibo.get("forma_pago") or forma_default).strip().zfill(2)
         es_interno = bool(datos.get("interno"))
         with get_timbrado_connection() as conn:
@@ -3503,7 +3923,7 @@ def generar_prexml_cobranza(recibo_id: int, datos: dict | None = None):
             facturas = _preparar_facturas_cobranza_cfdi(conn, cur, recibo, aplicaciones, recibo_id, es_interno=es_interno)
             serie_default = config.get("serie_complemento_pago") if tipo == "PAGO" else config.get("serie_nota_credito")
             serie = str(datos.get("serie") or serie_default or config.get("serie_cfdi") or ("PAG" if tipo == "PAGO" else "NC")).strip() or ("PAG" if tipo == "PAGO" else "NC")
-            folio = str(datos.get("folio_cfdi") or f"PREPAC-{recibo_id}").strip() or f"PREPAC-{recibo_id}"
+            folio = str(datos.get("folio_cfdi") or _obtener_siguiente_folio(conn, empresa, tipo_documento=tipo) or f"PREPAC-{recibo_id}").strip() or f"PREPAC-{recibo_id}"
             cuentas = _cuentas_bancarias_cobranza(cur, recibo) if tipo == "PAGO" else {}
             xml = _xml_comprobante_cobranza(tipo, recibo, aplicaciones, facturas, config, serie, folio, forma_pago, interno=es_interno, cuentas_bancarias=cuentas)
             headers = {
@@ -3695,7 +4115,7 @@ def timbrar_documento_cobranza(recibo_id: int, datos: dict | None = None):
             proveedor = str(config.get("proveedor") or "").strip().upper()
             es_interno = datos.get("interno") or False
             facturas = _preparar_facturas_cobranza_cfdi(conn, cur, recibo, aplicaciones, recibo_id, es_interno=es_interno)
-            forma_default = "03" if tipo == "PAGO" else "99"
+            forma_default = "03" if tipo == "PAGO" else "15"
             forma_pago = str(datos.get("forma_pago") or recibo.get("forma_pago") or forma_default).strip().zfill(2)
             if not es_interno and tipo == "PAGO" and forma_pago in ("", "99"):
                 raise HTTPException(status_code=400, detail="El complemento de pago requiere una FormaDePagoP SAT distinta de 99.")
@@ -3714,7 +4134,7 @@ def timbrar_documento_cobranza(recibo_id: int, datos: dict | None = None):
             else:
                 serie_default = config.get("serie_complemento_pago") if tipo == "PAGO" else config.get("serie_nota_credito")
                 serie = str(serie_default or config.get("serie_cfdi") or ("PAG" if tipo == "PAGO" else "NC")).strip() or ("PAG" if tipo == "PAGO" else "NC")
-                folio = _obtener_siguiente_folio(conn, empresa)
+                folio = _obtener_siguiente_folio(conn, empresa, tipo_documento=tipo)
                 estatus = "TIMBRADA"
                 uuid_cfdi = ""
             folio_documento = f"{tipo[:3]}-{recibo.get('folio') or recibo_id}"
@@ -3762,6 +4182,7 @@ def timbrar_documento_cobranza(recibo_id: int, datos: dict | None = None):
                     return {
                         "procesado": False,
                         "bloqueo_pac": True,
+                        "mensaje": "El documento no fue timbrado por el PAC.",
                         "recibo_id": recibo_id,
                         "tipo_documento": tipo,
                         "modo": proveedor,
@@ -3769,6 +4190,7 @@ def timbrar_documento_cobranza(recibo_id: int, datos: dict | None = None):
                         "folio_candidato": folio,
                         "prexml_path": prexml_path,
                         "detalle": f"No se pudo timbrar en PAC: {exc}",
+                        "folio_consumido": False,
                     }
                 contenido = resultado_pac.xml_timbrado
                 uuid_cfdi = resultado_pac.uuid
@@ -3787,7 +4209,7 @@ def timbrar_documento_cobranza(recibo_id: int, datos: dict | None = None):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (recibo_id, tipo, folio_documento, empresa, recibo.get("numero_cliente") or "", facturas[0].get("cliente_receptor_nombre") or "", serie, folio, uuid_cfdi, estatus, xml_path, now, forma_pago))
             if not es_interno:
-                _avanzar_folio_empresa(conn, empresa, folio)
+                _avanzar_folio_empresa(conn, empresa, folio, tipo_documento=tipo)
             registrar_intento_pac(
                 conn,
                 {"id": recibo_id, "factura_id": recibo_id, "factura": folio_documento, "empresa": empresa},
@@ -4087,6 +4509,7 @@ def _variables_correo_cfdi(row: dict, folio_serie: str) -> dict:
         "empresa_nombre": empresa,
         "cliente_numero": row.get("cliente_receptor_numero") or "",
         "cliente_nombre": row.get("cliente_receptor_nombre") or "",
+        "tipo_documento": "Complemento de pago" if row.get("origen_cfdi") == "COBRANZA" and str(row.get("tipo_documento") or "").upper() == "PAGO" else "Factura",
     }
 
 
@@ -4130,13 +4553,14 @@ def _cuerpo_html_correo_cfdi(variables: dict, emisor: str) -> str:
     folio = html_escape(str(v.get("folio_serie") or ""))
     fecha = html_escape(str(v.get("fecha_emision") or ""))
     monto = html_escape(_monto_correo_html(v.get("monto_total")))
+    tipo_documento = html_escape(str(v.get("tipo_documento") or "Factura"))
     return f"""<!doctype html>
 <html><body style=\"margin:0;padding:0;background:#ffffff;font-family:Arial,Helvetica,sans-serif;color:#444444;\">
   <table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\"><tr><td style=\"padding:28px 14px;\">
     <table role=\"presentation\" width=\"640\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" style=\"max-width:640px;width:100%;margin:0 auto;\">
       <tr><td style=\"font-size:16px;color:#1f1f1f;padding:0 0 24px 0;\">Para:&nbsp;&nbsp; {destinatario}</td></tr>
       <tr><td style=\"font-size:15px;line-height:1.55;padding-bottom:20px;\">Estimado Cliente,</td></tr>
-      <tr><td style=\"font-size:13px;line-height:1.6;padding-bottom:20px;\">{empresa} emitió para Usted un(os) documento(s) de tipo <strong>Factura</strong> con las siguientes características:</td></tr>
+      <tr><td style=\"font-size:13px;line-height:1.6;padding-bottom:20px;\">{empresa} emitió para Usted un(os) documento(s) de tipo <strong>{tipo_documento}</strong> con las siguientes características:</td></tr>
       <tr><td style=\"padding:0 34px 22px 34px;\">
         <table role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" style=\"font-size:16px;line-height:1.5;width:100%;\">
           <tr><td style=\"font-weight:bold;width:58%;\">Serie y Folio:</td><td>{folio}</td></tr>
@@ -4939,6 +5363,7 @@ def enviar_correo_cfdi_emitido(folio: str, datos: dict):
         destinatarios.append(correo)
     if not destinatarios:
         raise HTTPException(status_code=400, detail="Indica al menos un correo destino valido.")
+    recibo_cobranza = None
     with get_timbrado_connection() as conn:
         row = _buscar_cfdi_emitido_por_folio(conn, folio)
         xml_registrado = str(row.get("xml_path") or "").strip()
@@ -4948,6 +5373,11 @@ def enviar_correo_cfdi_emitido(folio: str, datos: dict):
             conn.execute("UPDATE " + tabla + " SET xml_path = ? WHERE id = ?", (xml_recuperado, row["id"]))
             row["xml_path"] = xml_recuperado
         cfg = _obtener_correo_documento(conn, "factura_fiscal", row.get("empresa"))
+        if row.get("origen_cfdi") == "COBRANZA":
+            recibo_cobranza = conn.execute(
+                "SELECT monto_total, tipo_recibo FROM cobranza_recibos WHERE id = ? LIMIT 1",
+                (row.get("recibo_id"),),
+            ).fetchone()
     if not cfg:
         raise HTTPException(status_code=400, detail="No hay cuenta activa configurada para factura fiscal.")
 
@@ -4962,6 +5392,16 @@ def enviar_correo_cfdi_emitido(folio: str, datos: dict):
         xml_bytes = fh.read()
     pdf_bytes = _generar_pdf_cfdi_bytes(row)
     variables = _enriquecer_variables_correo_desde_xml(_variables_correo_cfdi(row, folio_serie), xml_bytes)
+    # En un CFDI tipo P el Total fiscal es obligatoriamente 0.00. Para que el
+    # correo informe lo realmente recibido, tomamos el importe del recibo de
+    # cobranza y no el atributo Total del comprobante.
+    if recibo_cobranza:
+        datos_recibo = dict(recibo_cobranza)
+        variables["monto_total"] = str(datos_recibo.get("monto_total") or "0")
+        if str(datos_recibo.get("tipo_recibo") or "").upper() == "PAGO":
+            variables["tipo_documento"] = "Complemento de pago"
+        elif str(datos_recibo.get("tipo_recibo") or "").upper() == "NOTA_CREDITO":
+            variables["tipo_documento"] = "Nota de crédito"
     asunto_tpl = str(cfg.get("asunto_template") or "Factura fiscal {folio_serie}").strip()
     cuerpo_tpl = str(cfg.get("cuerpo_template") or "Adjuntamos la factura fiscal {folio_serie}.").strip()
     asunto = str(payload.get("asunto") or _render_template_correo(asunto_tpl, variables)).strip()
